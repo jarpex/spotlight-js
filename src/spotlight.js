@@ -1,5 +1,5 @@
 /*!
- * Spotlight JS v1.0.0
+ * Spotlight JS v1.0.1
  * Copyright (c) 2025 Anastasia Shebalkina
  * Licensed under the MIT License (see LICENSE)
  *
@@ -10,18 +10,64 @@
 (() => {
   'use strict';
 
+  // Constants
+
+  // Event Handling
+  const EVENT_PREFIX_LENGTH = 2; // Length of 'on' prefix for event handlers
+
+  // ID Generation
+  const ID_BASE = 36; // Base for random ID generation
+  const ID_SLICE_START = 2; // Start index for random ID slicing
+  const ID_SLICE_END = 9; // End index for random ID slicing
+
+  // Zoom & Scale
+  const ZOOM_FACTOR = 1.2; // Factor to zoom in/out by
+  const MAX_SCALE = 8; // Maximum zoom scale
+  const MIN_SCALE = 0.2; // Minimum zoom scale
+  const MIN_SCALE_FIT = 0.05; // Minimum scale when fitting to viewport
+  const PERCENTAGE = 100; // Multiplier for percentage display
+  const CENTER_OFFSET = 0.5; // Center offset for zoom calculation (0.5 = center)
+
+  // Pinch Gesture
+  const POINTERS_COUNT = 2; // Number of pointers for pinch gesture
+  const PINCH_MODERATION = 0.5; // Moderation factor for pinch zoom sensitivity
+
+  // Pan & Swipe (Touch)
+  const PAN_THRESHOLD = 0.1; // Threshold for panning vs zooming on touch
+  const SWIPE_TIMEOUT = 500; // Max time for a swipe gesture (ms)
+  const SWIPE_SCALE_THRESHOLD = 0.25; // Max scale deviation to allow swipe navigation
+  const SWIPE_THRESHOLD_PX = 20; // Minimum pixel distance for a swipe
+
+  // Wheel Interaction
+  const WHEEL_SCALE_THRESHOLD_NEAR = 0.8; // Threshold for "near base scale" check
+  const WHEEL_SCALE_THRESHOLD_FACTOR = 0.5; // Factor of base scale for threshold
+  const WHEEL_SWIPE_EASING = 1.5; // Threshold for easing out of wheel swipe
+  const SWIPE_DEBOUNCE = 500; // Debounce time for rapid swipes (ms)
+  const WHEEL_RATIO_THRESHOLD = 0.65; // Ratio of X to Y delta for horizontal swipe detection
+  const WHEEL_Y_THRESHOLD = 2; // Max Y delta for horizontal swipe detection
+  const WHEEL_RESET_DELAY = 140; // Delay to reset wheel gesture state (ms)
+
+  // Animation & UI
+  const SLIDE_OFFSET = 60; // Pixel offset for slide animation
+  const CLOSE_DELAY = 220; // Delay before removing overlay from DOM after close (ms)
+  const CONVERGENCE_SCALE = 0.001; // Convergence threshold for scale animation
+  const CONVERGENCE_TRANSLATE = 0.1; // Convergence threshold for translate animation
+  const CURSOR_SCALE_THRESHOLD = 0.02; // Threshold for changing cursor to grab
+
   // Utility
-  const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const create = (tag, attrs = {}, children = []) => {
     const el = document.createElement(tag);
     Object.entries(attrs).forEach(([k, v]) => {
-      if (k === 'style') Object.assign(el.style, v);
-      else if (k.startsWith('on') && typeof v === 'function')
-        el.addEventListener(k.slice(2), v);
-      else if (k === 'dataset')
+      if (k === 'style') {
+        Object.assign(el.style, v);
+      } else if (k.startsWith('on') && typeof v === 'function') {
+        el.addEventListener(k.slice(EVENT_PREFIX_LENGTH), v);
+      } else if (k === 'dataset') {
         Object.entries(v).forEach(([dk, dv]) => (el.dataset[dk] = dv));
-      else el.setAttribute(k, v);
+      } else {
+        el.setAttribute(k, v);
+      }
     });
     children.forEach((c) =>
       typeof c === 'string'
@@ -70,6 +116,7 @@
       this._swipeActive = false;
       this._swipeDirection = 0;
       this._pendingSlideDir = 0;
+      this.touchStart = null;
       this._init();
     }
 
@@ -95,9 +142,6 @@
       this.nodes.shell.appendChild(this.liveRegion);
 
       this._bindGlobalListeners();
-      console.log(
-        `Spotlight initialized with ${this.collections.length} collections.`
-      );
     }
 
     // Scan <article> and .gallery for images
@@ -106,7 +150,9 @@
       // Each <article> becomes a collection if it contains images
       $$('article').forEach((a) => {
         const imgs = $$('img', a);
-        if (imgs.length) containers.push({ type: 'article', el: a, imgs });
+        if (imgs.length) {
+          containers.push({ type: 'article', el: a, imgs });
+        }
       });
       // Each .gallery becomes a collection (even if also inside article) - but avoid duplicates by element identity
       $$('.gallery').forEach((g) => {
@@ -128,7 +174,9 @@
             imgEl.getAttribute('src') ||
             imgEl.currentSrc ||
             null;
-          if (!src) return;
+          if (!src) {
+            return;
+          }
           const figure = imgEl.closest('figure');
           const captionEl = figure ? figure.querySelector('figcaption') : null;
           const captionText = captionEl
@@ -156,7 +204,9 @@
     }
 
     _randId() {
-      return Math.random().toString(36).slice(2, 9);
+      return Math.random()
+        .toString(ID_BASE)
+        .slice(ID_SLICE_START, ID_SLICE_END);
     }
 
     // Overlay DOM + controls
@@ -342,8 +392,12 @@
       this.nodes.bg.addEventListener('click', () => this.close());
       this.nodes.prevBtn.addEventListener('click', () => this.prev());
       this.nodes.nextBtn.addEventListener('click', () => this.next());
-      this.nodes.zoomIn.addEventListener('click', () => this._zoomBy(1.2));
-      this.nodes.zoomOut.addEventListener('click', () => this._zoomBy(1 / 1.2));
+      this.nodes.zoomIn.addEventListener('click', () =>
+        this._zoomBy(ZOOM_FACTOR)
+      );
+      this.nodes.zoomOut.addEventListener('click', () =>
+        this._zoomBy(1 / ZOOM_FACTOR)
+      );
       this.nodes.zoomDisplay.addEventListener('click', () => this._resetZoom());
       this.nodes.fullscreenBtn.addEventListener('click', () =>
         this._toggleFullscreen()
@@ -380,76 +434,15 @@
 
     _bindGlobalListeners() {
       // Keyboard
-      window.addEventListener('keydown', (e) => {
-        if (!this.state.open) return;
-        this._handleUserActivity();
-        // Prefer modern physical-key 'code' (layout independent) but fall back to legacy 'key'
-        const code = e.code || '';
-        const key = e.key || '';
-        const kLower = String(key).toLowerCase();
-
-        // Close
-        if (code === 'Escape' || key === 'Escape' || key === 'Esc') {
-          this.close();
-        }
-        // Next: ArrowRight or physical 'L' key (KeyL) or legacy 'l'
-        else if (
-          code === 'ArrowRight' ||
-          code === 'KeyL' ||
-          key === 'ArrowRight' ||
-          kLower === 'l' ||
-          key === 'Right' // older browsers
-        ) {
-          this.next();
-        }
-        // Prev: ArrowLeft or physical 'H' key (KeyH) or legacy 'h'
-        else if (
-          code === 'ArrowLeft' ||
-          code === 'KeyH' ||
-          key === 'ArrowLeft' ||
-          kLower === 'h' ||
-          key === 'Left' // older browsers
-        ) {
-          this.prev();
-        }
-        // Zoom in: '='/+' (Equal physical key or NumpadAdd) or legacy '+'/'='
-        else if (
-          code === 'Equal' ||
-          code === 'NumpadAdd' ||
-          key === '+' ||
-          key === '='
-        ) {
-          this._zoomBy(1.2);
-        }
-        // Zoom out: '-'/'_' (Minus physical key or NumpadSubtract) or legacy '-'/'_'
-        else if (
-          code === 'Minus' ||
-          code === 'NumpadSubtract' ||
-          key === '-' ||
-          key === '_'
-        ) {
-          this._zoomBy(1 / 1.2);
-        }
-        // Reset zoom: '0' or ')' (Digit0 physical key or Numpad0) or legacy '0' / ')'
-        else if (
-          code === 'Digit0' ||
-          code === 'Numpad0' ||
-          key === '0' ||
-          key === ')'
-        ) {
-          this._resetZoom();
-        }
-        // Fullscreen toggle: physical 'F' (KeyF) or legacy 'f'
-        else if (code === 'KeyF' || kLower === 'f') {
-          this._toggleFullscreen();
-        }
-      });
+      window.addEventListener('keydown', (e) => this._handleKeydown(e));
 
       // Wheel to zoom (if pointer over image)
       this.nodes.canvas.addEventListener(
         'wheel',
         (e) => {
-          if (!this.state.open) return;
+          if (!this.state.open) {
+            return;
+          }
           this._handleUserActivity();
           const mode = this._detectWheelMode(e);
           if (mode === 'swipe') {
@@ -466,26 +459,33 @@
 
       // Drag image (pan)
       let dragging = false;
-      let last = { x: 0, y: 0 };
+      const last = { x: 0, y: 0 };
       this.nodes.imgNode.addEventListener('pointerdown', (e) => {
-        if (!this.state.open) return;
+        if (!this.state.open) {
+          return;
+        }
         this._handleUserActivity();
-        if (!e.isPrimary) return;
+        if (!e.isPrimary) {
+          return;
+        }
         dragging = true;
         last.x = e.clientX;
         last.y = e.clientY;
         try {
           this.nodes.imgNode.setPointerCapture(e.pointerId);
-        } catch (err) {}
+        } catch {}
       });
       window.addEventListener('pointermove', (e) => {
-        if (!dragging) return;
+        if (!dragging) {
+          return;
+        }
         this._handleUserActivity();
 
         // Disable pan without zoom on mobile/touch
         if (
           e.pointerType === 'touch' &&
-          Math.abs(this.state.scale - (this.state.baseScale || 1)) < 0.1
+          Math.abs(this.state.scale - (this.state.baseScale || 1)) <
+            PAN_THRESHOLD
         ) {
           return;
         }
@@ -502,62 +502,35 @@
         if (dragging) {
           try {
             this.nodes.imgNode.releasePointerCapture(e.pointerId);
-          } catch (err) {}
+          } catch {}
         }
         dragging = false;
       });
 
       // Touch swipes: detect horizontal swipe when at default zoom to navigate
-      let touchStart = null;
+      this.touchStart = null;
       this.nodes.canvas.addEventListener(
         'touchstart',
         (e) => {
-          if (!this.state.open) return;
+          if (!this.state.open) {
+            return;
+          }
           this._handleUserActivity();
           if (e.touches.length === 1) {
-            touchStart = {
+            this.touchStart = {
               x: e.touches[0].clientX,
               y: e.touches[0].clientY,
               t: Date.now(),
             };
           } else {
-            touchStart = null;
+            this.touchStart = null;
           }
         },
         { passive: true }
       );
       this.nodes.canvas.addEventListener(
         'touchend',
-        (e) => {
-          if (!this.state.open || !touchStart) return;
-          this._handleUserActivity();
-          const endX =
-            (e.changedTouches &&
-              e.changedTouches[0] &&
-              e.changedTouches[0].clientX) ||
-            0;
-          const endY =
-            (e.changedTouches &&
-              e.changedTouches[0] &&
-              e.changedTouches[0].clientY) ||
-            0;
-          const dx = endX - touchStart.x;
-          const dy = endY - touchStart.y;
-          const dt = Date.now() - touchStart.t;
-          touchStart = null;
-          const absDx = Math.abs(dx),
-            absDy = Math.abs(dy);
-          const swipeThreshold = 20;
-          if (
-            absDx > absDy &&
-            absDx > swipeThreshold &&
-            dt < 500 &&
-            Math.abs(this.state.scale - (this.state.baseScale || 1)) < 0.25
-          ) {
-            if (dx < 0) this.next();
-            else this.prev();
-          }
-        },
+        (e) => this._handleTouchEnd(e),
         { passive: true }
       );
 
@@ -565,7 +538,9 @@
       this._bindPinch();
 
       const ro = new ResizeObserver(() => {
-        if (!this.state.open) return;
+        if (!this.state.open) {
+          return;
+        }
         this._fitImageToViewport();
         this._applyTransform({ immediate: true });
       });
@@ -580,10 +555,18 @@
       this._handleUserActivity();
       const threshold = 45; // tuned for macOS trackpads
       const base = this.state.baseScale || 1;
-      if (Math.abs(this.state.scale - base) > Math.max(0.8, base * 0.5)) return;
+      if (
+        Math.abs(this.state.scale - base) >
+        Math.max(
+          WHEEL_SCALE_THRESHOLD_NEAR,
+          base * WHEEL_SCALE_THRESHOLD_FACTOR
+        )
+      ) {
+        return;
+      }
       if (this._swipeActive) {
         const direction = deltaX === 0 ? 0 : deltaX > 0 ? 1 : -1;
-        const easingOut = Math.abs(deltaX) < 1.5;
+        const easingOut = Math.abs(deltaX) < WHEEL_SWIPE_EASING;
         const reversing = direction && direction !== this._swipeDirection;
         if (reversing || easingOut) {
           this._endWheelGesture();
@@ -602,7 +585,7 @@
     _commitSwipeNavigation(direction) {
       // Debounce rapid swipes
       const now = Date.now();
-      if (now - (this._lastSwipeTime || 0) < 500) {
+      if (now - (this._lastSwipeTime || 0) < SWIPE_DEBOUNCE) {
         this._wheelSwipeAccum = 0;
         return;
       }
@@ -611,12 +594,17 @@
       this._swipeActive = true;
       this._swipeDirection = direction;
       this._wheelSwipeAccum = 0;
-      if (direction < 0) this.prev();
-      else if (direction > 0) this.next();
+      if (direction < 0) {
+        this.prev();
+      } else if (direction > 0) {
+        this.next();
+      }
     }
 
     _detectWheelMode(event) {
-      if (this._wheelMode) return this._wheelMode;
+      if (this._wheelMode) {
+        return this._wheelMode;
+      }
       if (event.ctrlKey) {
         this._wheelMode = 'zoom';
         return this._wheelMode;
@@ -625,10 +613,19 @@
       const absY = Math.abs(event.deltaY);
       const base = this.state.baseScale || 1;
       const nearBase =
-        Math.abs(this.state.scale - base) <= Math.max(0.8, base * 0.5);
-      const horizontal = (absX > absY * 0.65 && absX - absY > 1) || absY < 2;
-      if (nearBase && horizontal) this._wheelMode = 'swipe';
-      else this._wheelMode = 'zoom';
+        Math.abs(this.state.scale - base) <=
+        Math.max(
+          WHEEL_SCALE_THRESHOLD_NEAR,
+          base * WHEEL_SCALE_THRESHOLD_FACTOR
+        );
+      const horizontal =
+        (absX > absY * WHEEL_RATIO_THRESHOLD && absX - absY > 1) ||
+        absY < WHEEL_Y_THRESHOLD;
+      if (nearBase && horizontal) {
+        this._wheelMode = 'swipe';
+      } else {
+        this._wheelMode = 'zoom';
+      }
       return this._wheelMode;
     }
 
@@ -641,7 +638,10 @@
 
     _scheduleWheelGestureReset() {
       clearTimeout(this._wheelSwipeTimer);
-      this._wheelSwipeTimer = setTimeout(() => this._endWheelGesture(), 140);
+      this._wheelSwipeTimer = setTimeout(
+        () => this._endWheelGesture(),
+        WHEEL_RESET_DELAY
+      );
     }
 
     _endWheelGesture() {
@@ -656,7 +656,9 @@
     }
 
     _handleUserActivity() {
-      if (!this.state.open) return;
+      if (!this.state.open) {
+        return;
+      }
       this._showUiImmediate();
       this._scheduleUiHide();
     }
@@ -674,33 +676,48 @@
     }
 
     _showUiImmediate() {
-      if (!this.nodes?.ui) return;
+      if (!this.nodes?.ui) {
+        return;
+      }
       this.nodes.ui.classList.add('spot-ui-visible');
       this.nodes.ui.classList.remove('spot-ui-hidden');
       // ensure navs are visible when UI is shown
-      if (this.overlay) this.overlay.classList.remove('spot-nav-hidden');
+      if (this.overlay) {
+        this.overlay.classList.remove('spot-nav-hidden');
+      }
     }
 
     _hideUi() {
-      if (!this.nodes?.ui) return;
+      if (!this.nodes?.ui) {
+        return;
+      }
       this.nodes.ui.classList.add('spot-ui-hidden');
       this.nodes.ui.classList.remove('spot-ui-visible');
       // hide navs with outward animation
-      if (this.overlay) this.overlay.classList.add('spot-nav-hidden');
+      if (this.overlay) {
+        this.overlay.classList.add('spot-nav-hidden');
+      }
     }
 
     _toggleFullscreen() {
       this._handleUserActivity();
-      if (this.state.fullscreen) this._exitFullscreen();
-      else this._enterFullscreen();
+      if (this.state.fullscreen) {
+        this._exitFullscreen();
+      } else {
+        this._enterFullscreen();
+      }
     }
 
     _enterFullscreen() {
       const target = this.overlay;
-      if (!target || document.fullscreenElement === target) return;
+      if (!target || document.fullscreenElement === target) {
+        return;
+      }
       if (target.requestFullscreen) {
         const res = target.requestFullscreen();
-        if (res && typeof res.catch === 'function') res.catch(() => {});
+        if (res && typeof res.catch === 'function') {
+          res.catch(() => {});
+        }
       }
       this._syncFullscreenState();
     }
@@ -708,7 +725,9 @@
     _exitFullscreen() {
       if (document.fullscreenElement && document.exitFullscreen) {
         const res = document.exitFullscreen();
-        if (res && typeof res.catch === 'function') res.catch(() => {});
+        if (res && typeof res.catch === 'function') {
+          res.catch(() => {});
+        }
       }
       this._syncFullscreenState();
     }
@@ -721,7 +740,9 @@
 
     _updateFullscreenButton() {
       const btn = this.nodes?.fullscreenBtn;
-      if (!btn) return;
+      if (!btn) {
+        return;
+      }
       // Swap SVG icon depending on fullscreen state
       btn.innerHTML = this.state.fullscreen ? SVG_MINIMIZE : SVG_MAXIMIZE;
       btn.setAttribute(
@@ -734,16 +755,20 @@
     _animateSlide(direction, cb) {
       this._handleUserActivity();
       this._pendingSlideDir = direction || 0;
-      if (typeof cb === 'function') cb();
+      if (typeof cb === 'function') {
+        cb();
+      }
     }
 
     _playSlideIn(direction) {
       const img = this.nodes?.imgNode;
-      if (!img) return;
+      if (!img) {
+        return;
+      }
       const dir = direction || 0;
       img.style.transition = 'none';
       if (dir) {
-        img.style.transform = `translateX(${dir * 60}px) scale(0.96)`;
+        img.style.transform = `translateX(${dir * SLIDE_OFFSET}px) scale(0.96)`;
         img.style.opacity = '0';
       } else {
         img.style.transform = 'translateX(0) scale(1)';
@@ -764,14 +789,16 @@
     }
 
     _bindPinch() {
-      let pointers = new Map();
+      const pointers = new Map();
       let initialDistance = 0;
       let initialScale = 1;
       const onPointerDown = (e) => {
-        if (!this.state.open) return;
+        if (!this.state.open) {
+          return;
+        }
         this._handleUserActivity();
         pointers.set(e.pointerId, e);
-        if (pointers.size === 2) {
+        if (pointers.size === POINTERS_COUNT) {
           // calculate distance
           const [p1, p2] = Array.from(pointers.values());
           initialDistance = Math.hypot(
@@ -782,14 +809,16 @@
         }
       };
       const onPointerMove = (e) => {
-        if (!pointers.has(e.pointerId)) return;
+        if (!pointers.has(e.pointerId)) {
+          return;
+        }
         if (!this.state.open) {
           pointers.clear();
           return;
         }
         this._handleUserActivity();
         pointers.set(e.pointerId, e);
-        if (pointers.size === 2) {
+        if (pointers.size === POINTERS_COUNT) {
           const [p1, p2] = Array.from(pointers.values());
           const currentDistance = Math.hypot(
             p2.clientX - p1.clientX,
@@ -797,10 +826,10 @@
           );
           if (initialDistance > 0) {
             const factor = currentDistance / initialDistance;
-            const moderated = 1 + (factor - 1) * 0.5;
+            const moderated = 1 + (factor - 1) * PINCH_MODERATION;
             this.state.scale = Math.min(
-              8,
-              Math.max(0.2, initialScale * moderated)
+              MAX_SCALE,
+              Math.max(MIN_SCALE, initialScale * moderated)
             );
             this._startRenderLoop();
           }
@@ -808,7 +837,7 @@
       };
       const onPointerUp = (e) => {
         pointers.delete(e.pointerId);
-        if (pointers.size < 2) {
+        if (pointers.size < POINTERS_COUNT) {
           initialDistance = 0;
           initialScale = this.state.scale;
         }
@@ -822,7 +851,9 @@
 
     // Open a collection by index, show item index
     openCollection(collectionIndex, itemIndex = 0) {
-      if (!this.collections[collectionIndex]) return;
+      if (!this.collections[collectionIndex]) {
+        return;
+      }
       this.state.open = true;
       this.state.collectionIndex = collectionIndex;
       this.state.itemIndex = itemIndex;
@@ -845,7 +876,9 @@
     }
 
     close() {
-      if (!this.state.open) return;
+      if (!this.state.open) {
+        return;
+      }
       this.overlay.classList.remove('spot-open');
       this.overlay.setAttribute('aria-hidden', 'true');
       document.documentElement.style.overflow = '';
@@ -864,14 +897,20 @@
 
       // small delay to allow animation
       setTimeout(() => {
-        if (!this.state.open) this.overlay.style.display = 'none';
-        if (this._lastFocused) this._lastFocused.focus();
-      }, 220);
+        if (!this.state.open) {
+          this.overlay.style.display = 'none';
+        }
+        if (this._lastFocused) {
+          this._lastFocused.focus();
+        }
+      }, CLOSE_DELAY);
     }
 
     prev() {
       const c = this.collections[this.state.collectionIndex];
-      if (!c) return;
+      if (!c) {
+        return;
+      }
       this.state.itemIndex =
         (this.state.itemIndex - 1 + c.items.length) % c.items.length;
       this._animateSlide(-1, () => this._loadItem());
@@ -879,16 +918,22 @@
 
     next() {
       const c = this.collections[this.state.collectionIndex];
-      if (!c) return;
+      if (!c) {
+        return;
+      }
       this.state.itemIndex = (this.state.itemIndex + 1) % c.items.length;
       this._animateSlide(1, () => this._loadItem());
     }
 
     _loadItem() {
       const coll = this.collections[this.state.collectionIndex];
-      if (!coll) return;
+      if (!coll) {
+        return;
+      }
       const item = coll.items[this.state.itemIndex];
-      if (!item) return;
+      if (!item) {
+        return;
+      }
 
       // Capture requested slide direction immediately so rapid successive
       // navigations do not lose the intended animation direction.
@@ -950,7 +995,9 @@
     }
 
     _updateCaption(text) {
-      if (!this.nodes || !this.nodes.caption) return;
+      if (!this.nodes || !this.nodes.caption) {
+        return;
+      }
       const val = (text || '').trim();
       if (!val) {
         // No caption detected: hide caption element entirely
@@ -981,7 +1028,9 @@
     }
 
     _startRenderLoop() {
-      if (this._rafId) return;
+      if (this._rafId) {
+        return;
+      }
       this._renderActive = true;
       this._renderLoop();
     }
@@ -1004,9 +1053,9 @@
 
       // Check for convergence
       if (
-        Math.abs(scale - rs.scale) < 0.001 &&
-        Math.abs(translateX - rs.translateX) < 0.1 &&
-        Math.abs(translateY - rs.translateY) < 0.1
+        Math.abs(scale - rs.scale) < CONVERGENCE_SCALE &&
+        Math.abs(translateX - rs.translateX) < CONVERGENCE_TRANSLATE &&
+        Math.abs(translateY - rs.translateY) < CONVERGENCE_TRANSLATE
       ) {
         rs.scale = scale;
         rs.translateX = translateX;
@@ -1022,7 +1071,8 @@
 
         const img = this.nodes.imgNode;
         img.style.cursor =
-          Math.abs(rs.scale - (this.state.baseScale || 1)) > 0.02 ||
+          Math.abs(rs.scale - (this.state.baseScale || 1)) >
+            CURSOR_SCALE_THRESHOLD ||
           Math.abs(rs.translateX) > 1 ||
           Math.abs(rs.translateY) > 1
             ? 'grab'
@@ -1038,13 +1088,17 @@
 
     _fitImageToViewport() {
       const img = this.nodes?.imgNode;
-      if (!img) return;
+      if (!img) {
+        return;
+      }
       const vw = Math.max(window.innerWidth, 1);
       const vh = Math.max(window.innerHeight, 1);
       const intrinsicWidth = img.naturalWidth || img.width || img.clientWidth;
       const intrinsicHeight =
         img.naturalHeight || img.height || img.clientHeight;
-      if (!intrinsicWidth || !intrinsicHeight) return;
+      if (!intrinsicWidth || !intrinsicHeight) {
+        return;
+      }
 
       const scaleW = vw / intrinsicWidth;
       const scaleH = vh / intrinsicHeight;
@@ -1072,7 +1126,7 @@
         baseScale = Math.min(scaleW, scaleH);
       }
 
-      baseScale = Math.min(8, Math.max(0.05, baseScale));
+      baseScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE_FIT, baseScale));
       this.state.baseScale = baseScale;
       this.state.scale = baseScale;
       this.state.translateX = 0;
@@ -1084,7 +1138,9 @@
 
     _applyTransform(options = {}) {
       const immediate = options.immediate || !this.state.open;
-      if (!this.nodes || !this.nodes.transform) return;
+      if (!this.nodes || !this.nodes.transform) {
+        return;
+      }
 
       const { scale, translateX, translateY } = this.state;
       const wrapper = this.nodes.transform;
@@ -1100,7 +1156,8 @@
 
       const img = this.nodes.imgNode;
       img.style.cursor =
-        Math.abs(scale - (this.state.baseScale || 1)) > 0.02 ||
+        Math.abs(scale - (this.state.baseScale || 1)) >
+          CURSOR_SCALE_THRESHOLD ||
         Math.abs(translateX) > 1 ||
         Math.abs(translateY) > 1
           ? 'grab'
@@ -1108,15 +1165,20 @@
     }
 
     _updateZoomDisplay(scale) {
-      if (!this.nodes || !this.nodes.zoomDisplay) return;
-      const pct = Math.round((scale || 1) * 100);
+      if (!this.nodes || !this.nodes.zoomDisplay) {
+        return;
+      }
+      const pct = Math.round((scale || 1) * PERCENTAGE);
       this.nodes.zoomDisplay.textContent = `${pct}%`;
       this.nodes.zoomDisplay.title = `Reset zoom (${pct}%)`;
     }
 
     _zoomBy(factor) {
       this._handleUserActivity();
-      this.state.scale = Math.min(8, Math.max(0.2, this.state.scale * factor));
+      this.state.scale = Math.min(
+        MAX_SCALE,
+        Math.max(MIN_SCALE, this.state.scale * factor)
+      );
       // adjust translate to keep center (approx)
       this._startRenderLoop();
     }
@@ -1138,7 +1200,10 @@
       const imgCx = clientX - rect.left;
       const imgCy = clientY - rect.top;
       const prevScale = this.state.scale;
-      const newScale = Math.min(8, Math.max(0.2, prevScale * factor));
+      const newScale = Math.min(
+        MAX_SCALE,
+        Math.max(MIN_SCALE, prevScale * factor)
+      );
       // compute new translate so that image point under cursor stays under cursor
       // formula: (tx,ty) in CSS translate coords (px). compute relative point ratios
       const relX = imgCx / rect.width; // 0..1 within current rendered image
@@ -1147,11 +1212,12 @@
       const beforeScale = prevScale;
       const afterScale = newScale;
       // compute offsets
-      const centerXBefore = rect.width / 2;
-      const centerYBefore = rect.height / 2;
+      // centerXBefore / centerYBefore removed (previously unused)
       // Simplified approach: adjust translate by difference scaled
-      const dx = (relX - 0.5) * rect.width * (afterScale / beforeScale - 1);
-      const dy = (relY - 0.5) * rect.height * (afterScale / beforeScale - 1);
+      const dx =
+        (relX - CENTER_OFFSET) * rect.width * (afterScale / beforeScale - 1);
+      const dy =
+        (relY - CENTER_OFFSET) * rect.height * (afterScale / beforeScale - 1);
       this.state.translateX -= dx;
       this.state.translateY -= dy;
       this.state.scale = newScale;
@@ -1169,7 +1235,9 @@
     }
 
     _injectStyles() {
-      if (document.getElementById('spotlight-styles')) return;
+      if (document.getElementById('spotlight-styles')) {
+        return;
+      }
       const css = `
       :root {
         --spot-bg: rgba(6,6,8,1);
@@ -1279,20 +1347,165 @@
       style.appendChild(document.createTextNode(css));
       document.head.appendChild(style);
     }
+
+    _handleKeydown(e) {
+      if (!this.state.open) {
+        return;
+      }
+      this._handleUserActivity();
+      // Prefer modern physical-key 'code' (layout independent) but fall back to legacy 'key'
+      const code = e.code || '';
+      const key = e.key || '';
+      const kLower = String(key).toLowerCase();
+
+      // Close
+      if (code === 'Escape' || key === 'Escape' || key === 'Esc') {
+        this.close();
+        return;
+      }
+
+      if (this._handleNavigation(code, key, kLower)) {
+        return;
+      }
+      if (this._handleZoom(code, key)) {
+        return;
+      }
+
+      if (this._isResetZoomKey(code, key)) {
+        this._resetZoom();
+      } else if (code === 'KeyF' || kLower === 'f') {
+        this._toggleFullscreen();
+      }
+    }
+
+    _handleNavigation(code, key, kLower) {
+      if (this._isNextKey(code, key, kLower)) {
+        this.next();
+        return true;
+      }
+      if (this._isPrevKey(code, key, kLower)) {
+        this.prev();
+        return true;
+      }
+      return false;
+    }
+
+    _handleZoom(code, key) {
+      if (this._isZoomInKey(code, key)) {
+        this._zoomBy(ZOOM_FACTOR);
+        return true;
+      }
+      if (this._isZoomOutKey(code, key)) {
+        this._zoomBy(1 / ZOOM_FACTOR);
+        return true;
+      }
+      return false;
+    }
+
+    _isNextKey(code, key, kLower) {
+      return (
+        code === 'ArrowRight' ||
+        code === 'KeyL' ||
+        key === 'ArrowRight' ||
+        kLower === 'l' ||
+        key === 'Right'
+      );
+    }
+
+    _isPrevKey(code, key, kLower) {
+      return (
+        code === 'ArrowLeft' ||
+        code === 'KeyH' ||
+        key === 'ArrowLeft' ||
+        kLower === 'h' ||
+        key === 'Left'
+      );
+    }
+
+    _isZoomInKey(code, key) {
+      return (
+        code === 'Equal' || code === 'NumpadAdd' || key === '+' || key === '='
+      );
+    }
+
+    _isZoomOutKey(code, key) {
+      return (
+        code === 'Minus' ||
+        code === 'NumpadSubtract' ||
+        key === '-' ||
+        key === '_'
+      );
+    }
+
+    _isResetZoomKey(code, key) {
+      return (
+        code === 'Digit0' || code === 'Numpad0' || key === '0' || key === ')'
+      );
+    }
+
+    _handleTouchEnd(e) {
+      if (!this.state.open || !this.touchStart) {
+        return;
+      }
+      this._handleUserActivity();
+      const endX =
+        (e.changedTouches &&
+          e.changedTouches[0] &&
+          e.changedTouches[0].clientX) ||
+        0;
+      const endY =
+        (e.changedTouches &&
+          e.changedTouches[0] &&
+          e.changedTouches[0].clientY) ||
+        0;
+      const dx = endX - this.touchStart.x;
+      const dy = endY - this.touchStart.y;
+      const dt = Date.now() - this.touchStart.t;
+      this.touchStart = null;
+
+      if (this._isValidSwipe(dx, dy, dt)) {
+        if (dx < 0) {
+          this.next();
+        } else {
+          this.prev();
+        }
+      }
+    }
+
+    _isValidSwipe(dx, dy, dt) {
+      const absDx = Math.abs(dx);
+      const absDy = Math.abs(dy);
+      return (
+        absDx > absDy &&
+        absDx > SWIPE_THRESHOLD_PX &&
+        dt < SWIPE_TIMEOUT &&
+        Math.abs(this.state.scale - (this.state.baseScale || 1)) <
+          SWIPE_SCALE_THRESHOLD
+      );
+    }
   }
 
   function initSpotlight() {
-    if (window.__spotlight_instance) return window.__spotlight_instance;
+    if (window.__spotlight_instance) {
+      return window.__spotlight_instance;
+    }
     const inst = new Spotlight();
     window.__spotlight_instance = inst;
     return inst;
   }
 
+  // Backwards-compatible alias used elsewhere in the code
+  const initSpotlightOnce = initSpotlight;
+
   window.addEventListener('click', (e) => {
     const target = e.target.closest('img');
-    if (!target) return;
+    if (!target) {
+      return;
+    }
     const container = target.closest('article, .gallery');
-    if (!container) return;
+    if (!container) {
+      return;
+    }
 
     e.preventDefault();
     const inst = initSpotlight();
@@ -1307,7 +1520,9 @@
       return window.__spotlight_instance || null;
     },
     open: (collectionIndex = 0, itemIndex = 0) => {
-      if (!window.__spotlight_instance) initSpotlightOnce();
+      if (!window.__spotlight_instance) {
+        initSpotlightOnce();
+      }
       window.__spotlight_instance.openCollection(collectionIndex, itemIndex);
     },
     rescan: () => {
@@ -1316,9 +1531,10 @@
       // Simple strategy: rebuild instance
       try {
         // remove overlay if present
-        if (inst.overlay && inst.overlay.parentNode)
+        if (inst.overlay && inst.overlay.parentNode) {
           inst.overlay.parentNode.removeChild(inst.overlay);
-      } catch (err) {}
+        }
+      } catch {}
       delete window.__spotlight_instance;
       return initSpotlightOnce();
     },

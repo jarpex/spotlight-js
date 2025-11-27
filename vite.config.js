@@ -49,7 +49,19 @@ function minifyInlineCssSvg() {
       // Optimize inline SVG fragments found anywhere in the file
       out = out.replace(new RegExp('<svg[\\s\\S]*?<\\/svg>', 'g'), (svg) => {
         try {
-          const res = svgoOptimize(svg, { multipass: true });
+          const res = svgoOptimize(svg, {
+            multipass: true,
+            plugins: [
+              {
+                name: 'preset-default',
+                params: {
+                  overrides: {
+                    removeViewBox: false,
+                  },
+                },
+              },
+            ],
+          });
           if (res && res.error) return svg;
           // Escape backticks to keep template literals safe
           return res.data.replace(/`/g, '\\`');
