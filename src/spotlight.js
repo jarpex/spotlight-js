@@ -1,0 +1,1326 @@
+/*!
+ * Spotlight JS v1.0.0
+ * Copyright (c) 2025 Anastasia Shebalkina
+ * Licensed under the MIT License (see LICENSE)
+ *
+ * Includes Tabler Icons (https://tabler.io/icons), MIT License
+ * Copyright (c) 2020-2025 Tabler Icons Authors (see LICENSE.tabler-icons)
+ */
+
+(() => {
+  'use strict';
+
+  // Utility
+  const $ = (sel, root = document) => root.querySelector(sel);
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const create = (tag, attrs = {}, children = []) => {
+    const el = document.createElement(tag);
+    Object.entries(attrs).forEach(([k, v]) => {
+      if (k === 'style') Object.assign(el.style, v);
+      else if (k.startsWith('on') && typeof v === 'function')
+        el.addEventListener(k.slice(2), v);
+      else if (k === 'dataset')
+        Object.entries(v).forEach(([dk, dv]) => (el.dataset[dk] = dv));
+      else el.setAttribute(k, v);
+    });
+    children.forEach((c) =>
+      typeof c === 'string'
+        ? el.appendChild(document.createTextNode(c))
+        : el.appendChild(c)
+    );
+    return el;
+  };
+
+  // SVG icons used for the fullscreen toggle
+  const SVG_MAXIMIZE = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-arrows-maximize"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M16 4l4 0l0 4" /><path d="M14 10l6 -6" /><path d="M8 20l-4 0l0 -4" /><path d="M4 20l6 -6" /><path d="M16 20l4 0l0 -4" /><path d="M14 14l6 6" /><path d="M8 4l-4 0l0 4" /><path d="M4 4l6 6" /></svg>
+  `;
+
+  const SVG_MINIMIZE = `
+  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-arrows-minimize"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M5 9l4 0l0 -4" /><path d="M3 3l6 6" /><path d="M5 15l4 0l0 4" /><path d="M3 21l6 -6" /><path d="M19 9l-4 0l0 -4" /><path d="M15 9l6 -6" /><path d="M19 15l-4 0l0 4" /><path d="M15 15l6 6" /></svg>
+  `;
+
+  // Main
+  class Spotlight {
+    constructor() {
+      this.collections = []; // {id, container, items: [{src, el}], title?}
+      this.overlay = null;
+      this.state = {
+        open: false,
+        collectionIndex: 0,
+        itemIndex: 0,
+        scale: 1,
+        baseScale: 1,
+        translateX: 0,
+        translateY: 0,
+        fullscreen: false,
+      };
+      this._rafId = null;
+      this._renderActive = false;
+      this.renderState = {
+        scale: 1,
+        translateX: 0,
+        translateY: 0,
+      };
+      this._uiHideTimer = null;
+      this._uiHideDelay = 1500;
+      this._wheelSwipeAccum = 0;
+      this._wheelSwipeTimer = null;
+      this._wheelMode = null; // 'swipe' | 'zoom'
+      this._swipeActive = false;
+      this._swipeDirection = 0;
+      this._pendingSlideDir = 0;
+      this._init();
+    }
+
+    _init() {
+      this._injectStyles();
+      this._scanCollections();
+      this._createOverlay();
+
+      this.liveRegion = create('div', {
+        'aria-live': 'polite',
+        style: {
+          position: 'absolute',
+          width: '1px',
+          height: '1px',
+          padding: '0',
+          margin: '-1px',
+          overflow: 'hidden',
+          clip: 'rect(0,0,0,0)',
+          whiteSpace: 'nowrap',
+          border: '0',
+        },
+      });
+      this.nodes.shell.appendChild(this.liveRegion);
+
+      this._bindGlobalListeners();
+      console.log(
+        `Spotlight initialized with ${this.collections.length} collections.`
+      );
+    }
+
+    // Scan <article> and .gallery for images
+    _scanCollections() {
+      const containers = [];
+      // Each <article> becomes a collection if it contains images
+      $$('article').forEach((a) => {
+        const imgs = $$('img', a);
+        if (imgs.length) containers.push({ type: 'article', el: a, imgs });
+      });
+      // Each .gallery becomes a collection (even if also inside article) - but avoid duplicates by element identity
+      $$('.gallery').forEach((g) => {
+        if (!containers.some((c) => c.el === g)) {
+          const imgs = $$('img', g);
+          containers.push({ type: 'gallery', el: g, imgs });
+        } else {
+          // merge gallery if same element? skip
+        }
+      });
+
+      // For each container, create collection with srcs
+      containers.forEach((c, ci) => {
+        const items = [];
+        c.imgs.forEach((imgEl, idx) => {
+          // Try to get canonical src:
+          const src =
+            imgEl.dataset.src ||
+            imgEl.getAttribute('src') ||
+            imgEl.currentSrc ||
+            null;
+          if (!src) return;
+          const figure = imgEl.closest('figure');
+          const captionEl = figure ? figure.querySelector('figcaption') : null;
+          const captionText = captionEl
+            ? captionEl.textContent.trim()
+            : (
+                imgEl.getAttribute('data-caption') ||
+                imgEl.getAttribute('alt') ||
+                ''
+              ).trim();
+          items.push({ src, el: imgEl, caption: captionText });
+          // assign dataset values for collection and index
+          imgEl.dataset.spotlightCollection = String(this.collections.length);
+          imgEl.dataset.spotlightIndex = String(items.length - 1);
+          imgEl.style.cursor = 'zoom-in';
+        });
+
+        if (items.length) {
+          this.collections.push({
+            id: `spot-${this._randId()}`,
+            container: c.el,
+            items,
+          });
+        }
+      });
+    }
+
+    _randId() {
+      return Math.random().toString(36).slice(2, 9);
+    }
+
+    // Overlay DOM + controls
+    _createOverlay() {
+      // Root overlay
+      const overlay = create('div', {
+        id: 'spot-overlay',
+        'aria-hidden': 'true',
+        tabindex: '-1',
+      });
+
+      const bg = create('div', { id: 'spot-bg' });
+      const shell = create('div', {
+        id: 'spot-shell',
+        role: 'dialog',
+        'aria-modal': 'true',
+      });
+      const stage = create('div', { id: 'spot-stage', class: 'spot-stage' });
+
+      const prevBtn = create('button', {
+        id: 'spot-prev',
+        class: 'spot-nav',
+        'aria-label': 'Previous image',
+        'data-dir': '-1',
+      });
+      prevBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-compact-left"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M13 20l-3 -8l3 -8" /></svg>`;
+
+      const canvas = create('div', { id: 'spot-canvas', class: 'spot-canvas' });
+      const transform = create('div', {
+        id: 'spot-transform',
+        class: 'spot-transform',
+      });
+      const img = create('img', { id: 'spot-img', draggable: 'false' });
+
+      transform.appendChild(img);
+      canvas.appendChild(transform);
+
+      const nextBtn = create('button', {
+        id: 'spot-next',
+        class: 'spot-nav',
+        'aria-label': 'Next image',
+        'data-dir': '1',
+      });
+      nextBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-compact-right"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M11 4l3 8l-3 8" /></svg>`;
+
+      stage.appendChild(prevBtn);
+      stage.appendChild(canvas);
+      stage.appendChild(nextBtn);
+
+      const ui = create('div', {
+        id: 'spot-ui',
+        class: 'spot-ui spot-ui-visible',
+      });
+      const topbar = create('div', { id: 'spot-topbar', class: 'spot-topbar' });
+      const counter = create('div', {
+        id: 'spot-counter',
+        class: 'spot-counter',
+      });
+      const controls = create('div', { class: 'spot-controls' });
+
+      const zoomOut = create('button', {
+        id: 'spot-zoom-out',
+        class: 'spot-btn',
+        'aria-label': 'Zoom out',
+      });
+      zoomOut.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-zoom-out"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M7 10l6 0" /><path d="M21 21l-6 -6" /></svg>`;
+
+      const zoomDisplay = create(
+        'button',
+        {
+          id: 'spot-zoom-display',
+          class: 'spot-btn',
+          'aria-label': 'Reset zoom',
+        },
+        ['100%']
+      );
+
+      const zoomIn = create('button', {
+        id: 'spot-zoom-in',
+        class: 'spot-btn',
+        'aria-label': 'Zoom in',
+      });
+      zoomIn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-zoom-in"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M7 10l6 0" /><path d="M10 7l0 6" /><path d="M21 21l-6 -6" /></svg>`;
+
+      const fullscreen = create('button', {
+        id: 'spot-fullscreen',
+        class: 'spot-btn',
+        'aria-label': 'Toggle fullscreen',
+      });
+
+      const close = create('button', {
+        id: 'spot-close',
+        class: 'spot-btn',
+        'aria-label': 'Close',
+      });
+      close.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-x"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M18 6l-12 12" /><path d="M6 6l12 12" /></svg>`;
+
+      controls.appendChild(zoomOut);
+      controls.appendChild(zoomDisplay);
+      controls.appendChild(zoomIn);
+      controls.appendChild(fullscreen);
+      controls.appendChild(close);
+
+      topbar.appendChild(counter);
+      topbar.appendChild(controls);
+
+      const caption = create('div', {
+        id: 'spot-caption',
+        class: 'spot-caption',
+      });
+
+      ui.appendChild(topbar);
+      ui.appendChild(caption);
+
+      shell.appendChild(stage);
+      shell.appendChild(ui);
+
+      overlay.appendChild(bg);
+      overlay.appendChild(shell);
+
+      document.body.appendChild(overlay);
+      this.overlay = overlay;
+
+      // cache nodes
+      this.nodes = {
+        overlay,
+        bg,
+        shell,
+        ui,
+        closeBtn: close,
+        zoomIn,
+        zoomOut,
+        zoomDisplay,
+        fullscreenBtn: fullscreen,
+        prevBtn,
+        nextBtn,
+        canvas,
+        transform,
+        imgNode: img,
+        counter,
+        caption,
+      };
+
+      // track whether pointer is over UI (topbar / caption / buttons / navs)
+      this._pointerOverUi = false;
+      // counter to avoid flicker when moving between tracked elements
+      this._pointerOverUiCount = 0;
+
+      // Elements to track: nav buttons, caption, topbar and all .spot-btn
+      // Note: do NOT track this.nodes.ui because it covers the whole screen and would prevent hiding
+      const btns = Array.from(overlay.querySelectorAll('.spot-btn'));
+      const trackEls = [
+        this.nodes.prevBtn,
+        this.nodes.nextBtn,
+        this.nodes.caption,
+        topbar,
+        ...btns,
+      ].filter(Boolean);
+
+      const onEnter = () => {
+        this._pointerOverUiCount = (this._pointerOverUiCount || 0) + 1;
+        this._pointerOverUi = true;
+        this._showUiImmediate();
+      };
+      const onLeave = () => {
+        this._pointerOverUiCount = Math.max(
+          0,
+          (this._pointerOverUiCount || 0) - 1
+        );
+        if (this._pointerOverUiCount === 0) {
+          this._pointerOverUi = false;
+          this._scheduleUiHide();
+        }
+      };
+
+      trackEls.forEach((el) => {
+        el.addEventListener('pointerenter', onEnter);
+        el.addEventListener('pointerleave', onLeave);
+      });
+
+      // Events
+      this.nodes.closeBtn.addEventListener('click', () => this.close());
+      this.nodes.bg.addEventListener('click', () => this.close());
+      this.nodes.prevBtn.addEventListener('click', () => this.prev());
+      this.nodes.nextBtn.addEventListener('click', () => this.next());
+      this.nodes.zoomIn.addEventListener('click', () => this._zoomBy(1.2));
+      this.nodes.zoomOut.addEventListener('click', () => this._zoomBy(1 / 1.2));
+      this.nodes.zoomDisplay.addEventListener('click', () => this._resetZoom());
+      this.nodes.fullscreenBtn.addEventListener('click', () =>
+        this._toggleFullscreen()
+      );
+      overlay.addEventListener('pointermove', () => this._handleUserActivity());
+      overlay.addEventListener('pointerdown', () => this._handleUserActivity());
+      overlay.addEventListener('touchstart', () => this._handleUserActivity(), {
+        passive: true,
+      });
+      this._updateFullscreenButton();
+
+      // Prevent scroll behind overlay
+      overlay.addEventListener(
+        'wheel',
+        (e) => {
+          if (this.state.open && this._isPointerOverStage(e)) {
+            e.preventDefault();
+          }
+        },
+        { passive: false }
+      );
+    }
+
+    // check if event target is inside stage so we can handle wheel pan vs page scroll
+    _isPointerOverStage(e) {
+      const rect = this.nodes.canvas.getBoundingClientRect();
+      return (
+        e.clientX >= rect.left &&
+        e.clientX <= rect.right &&
+        e.clientY >= rect.top &&
+        e.clientY <= rect.bottom
+      );
+    }
+
+    _bindGlobalListeners() {
+      // Keyboard
+      window.addEventListener('keydown', (e) => {
+        if (!this.state.open) return;
+        this._handleUserActivity();
+        // Prefer modern physical-key 'code' (layout independent) but fall back to legacy 'key'
+        const code = e.code || '';
+        const key = e.key || '';
+        const kLower = String(key).toLowerCase();
+
+        // Close
+        if (code === 'Escape' || key === 'Escape' || key === 'Esc') {
+          this.close();
+        }
+        // Next: ArrowRight or physical 'L' key (KeyL) or legacy 'l'
+        else if (
+          code === 'ArrowRight' ||
+          code === 'KeyL' ||
+          key === 'ArrowRight' ||
+          kLower === 'l' ||
+          key === 'Right' // older browsers
+        ) {
+          this.next();
+        }
+        // Prev: ArrowLeft or physical 'H' key (KeyH) or legacy 'h'
+        else if (
+          code === 'ArrowLeft' ||
+          code === 'KeyH' ||
+          key === 'ArrowLeft' ||
+          kLower === 'h' ||
+          key === 'Left' // older browsers
+        ) {
+          this.prev();
+        }
+        // Zoom in: '='/+' (Equal physical key or NumpadAdd) or legacy '+'/'='
+        else if (
+          code === 'Equal' ||
+          code === 'NumpadAdd' ||
+          key === '+' ||
+          key === '='
+        ) {
+          this._zoomBy(1.2);
+        }
+        // Zoom out: '-'/'_' (Minus physical key or NumpadSubtract) or legacy '-'/'_'
+        else if (
+          code === 'Minus' ||
+          code === 'NumpadSubtract' ||
+          key === '-' ||
+          key === '_'
+        ) {
+          this._zoomBy(1 / 1.2);
+        }
+        // Reset zoom: '0' or ')' (Digit0 physical key or Numpad0) or legacy '0' / ')'
+        else if (
+          code === 'Digit0' ||
+          code === 'Numpad0' ||
+          key === '0' ||
+          key === ')'
+        ) {
+          this._resetZoom();
+        }
+        // Fullscreen toggle: physical 'F' (KeyF) or legacy 'f'
+        else if (code === 'KeyF' || kLower === 'f') {
+          this._toggleFullscreen();
+        }
+      });
+
+      // Wheel to zoom (if pointer over image)
+      this.nodes.canvas.addEventListener(
+        'wheel',
+        (e) => {
+          if (!this.state.open) return;
+          this._handleUserActivity();
+          const mode = this._detectWheelMode(e);
+          if (mode === 'swipe') {
+            e.preventDefault();
+            this._handleSwipeWheel(e.deltaX);
+          } else {
+            e.preventDefault();
+            this._handleWheelZoom(e);
+          }
+          this._scheduleWheelGestureReset();
+        },
+        { passive: false }
+      );
+
+      // Drag image (pan)
+      let dragging = false;
+      let last = { x: 0, y: 0 };
+      this.nodes.imgNode.addEventListener('pointerdown', (e) => {
+        if (!this.state.open) return;
+        this._handleUserActivity();
+        if (!e.isPrimary) return;
+        dragging = true;
+        last.x = e.clientX;
+        last.y = e.clientY;
+        try {
+          this.nodes.imgNode.setPointerCapture(e.pointerId);
+        } catch (err) {}
+      });
+      window.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        this._handleUserActivity();
+
+        // Disable pan without zoom on mobile/touch
+        if (
+          e.pointerType === 'touch' &&
+          Math.abs(this.state.scale - (this.state.baseScale || 1)) < 0.1
+        ) {
+          return;
+        }
+
+        const dx = e.clientX - last.x;
+        const dy = e.clientY - last.y;
+        last.x = e.clientX;
+        last.y = e.clientY;
+        this.state.translateX += dx;
+        this.state.translateY += dy;
+        this._startRenderLoop();
+      });
+      window.addEventListener('pointerup', (e) => {
+        if (dragging) {
+          try {
+            this.nodes.imgNode.releasePointerCapture(e.pointerId);
+          } catch (err) {}
+        }
+        dragging = false;
+      });
+
+      // Touch swipes: detect horizontal swipe when at default zoom to navigate
+      let touchStart = null;
+      this.nodes.canvas.addEventListener(
+        'touchstart',
+        (e) => {
+          if (!this.state.open) return;
+          this._handleUserActivity();
+          if (e.touches.length === 1) {
+            touchStart = {
+              x: e.touches[0].clientX,
+              y: e.touches[0].clientY,
+              t: Date.now(),
+            };
+          } else {
+            touchStart = null;
+          }
+        },
+        { passive: true }
+      );
+      this.nodes.canvas.addEventListener(
+        'touchend',
+        (e) => {
+          if (!this.state.open || !touchStart) return;
+          this._handleUserActivity();
+          const endX =
+            (e.changedTouches &&
+              e.changedTouches[0] &&
+              e.changedTouches[0].clientX) ||
+            0;
+          const endY =
+            (e.changedTouches &&
+              e.changedTouches[0] &&
+              e.changedTouches[0].clientY) ||
+            0;
+          const dx = endX - touchStart.x;
+          const dy = endY - touchStart.y;
+          const dt = Date.now() - touchStart.t;
+          touchStart = null;
+          const absDx = Math.abs(dx),
+            absDy = Math.abs(dy);
+          const swipeThreshold = 20;
+          if (
+            absDx > absDy &&
+            absDx > swipeThreshold &&
+            dt < 500 &&
+            Math.abs(this.state.scale - (this.state.baseScale || 1)) < 0.25
+          ) {
+            if (dx < 0) this.next();
+            else this.prev();
+          }
+        },
+        { passive: true }
+      );
+
+      // Pinch-to-zoom using Pointer Events
+      this._bindPinch();
+
+      const ro = new ResizeObserver(() => {
+        if (!this.state.open) return;
+        this._fitImageToViewport();
+        this._applyTransform({ immediate: true });
+      });
+      ro.observe(this.nodes.canvas);
+
+      document.addEventListener('fullscreenchange', () =>
+        this._syncFullscreenState()
+      );
+    }
+
+    _handleSwipeWheel(deltaX) {
+      this._handleUserActivity();
+      const threshold = 45; // tuned for macOS trackpads
+      const base = this.state.baseScale || 1;
+      if (Math.abs(this.state.scale - base) > Math.max(0.8, base * 0.5)) return;
+      if (this._swipeActive) {
+        const direction = deltaX === 0 ? 0 : deltaX > 0 ? 1 : -1;
+        const easingOut = Math.abs(deltaX) < 1.5;
+        const reversing = direction && direction !== this._swipeDirection;
+        if (reversing || easingOut) {
+          this._endWheelGesture();
+        } else {
+          return;
+        }
+      }
+      this._wheelSwipeAccum += deltaX;
+      if (this._wheelSwipeAccum > threshold) {
+        this._commitSwipeNavigation(1);
+      } else if (this._wheelSwipeAccum < -threshold) {
+        this._commitSwipeNavigation(-1);
+      }
+    }
+
+    _commitSwipeNavigation(direction) {
+      // Debounce rapid swipes
+      const now = Date.now();
+      if (now - (this._lastSwipeTime || 0) < 500) {
+        this._wheelSwipeAccum = 0;
+        return;
+      }
+      this._lastSwipeTime = now;
+
+      this._swipeActive = true;
+      this._swipeDirection = direction;
+      this._wheelSwipeAccum = 0;
+      if (direction < 0) this.prev();
+      else if (direction > 0) this.next();
+    }
+
+    _detectWheelMode(event) {
+      if (this._wheelMode) return this._wheelMode;
+      if (event.ctrlKey) {
+        this._wheelMode = 'zoom';
+        return this._wheelMode;
+      }
+      const absX = Math.abs(event.deltaX);
+      const absY = Math.abs(event.deltaY);
+      const base = this.state.baseScale || 1;
+      const nearBase =
+        Math.abs(this.state.scale - base) <= Math.max(0.8, base * 0.5);
+      const horizontal = (absX > absY * 0.65 && absX - absY > 1) || absY < 2;
+      if (nearBase && horizontal) this._wheelMode = 'swipe';
+      else this._wheelMode = 'zoom';
+      return this._wheelMode;
+    }
+
+    _handleWheelZoom(event) {
+      const delta = -event.deltaY;
+      const step = 1.04;
+      const factor = delta > 0 ? step : 1 / step;
+      this._zoomAtPoint(factor, event.clientX, event.clientY);
+    }
+
+    _scheduleWheelGestureReset() {
+      clearTimeout(this._wheelSwipeTimer);
+      this._wheelSwipeTimer = setTimeout(() => this._endWheelGesture(), 140);
+    }
+
+    _endWheelGesture() {
+      if (this._wheelSwipeTimer) {
+        clearTimeout(this._wheelSwipeTimer);
+        this._wheelSwipeTimer = null;
+      }
+      this._wheelSwipeAccum = 0;
+      this._swipeActive = false;
+      this._wheelMode = null;
+      this._swipeDirection = 0;
+    }
+
+    _handleUserActivity() {
+      if (!this.state.open) return;
+      this._showUiImmediate();
+      this._scheduleUiHide();
+    }
+
+    _scheduleUiHide() {
+      clearTimeout(this._uiHideTimer);
+      this._uiHideTimer = setTimeout(() => {
+        if (this._pointerOverUi) {
+          // still over UI — reschedule hide
+          this._scheduleUiHide();
+        } else {
+          this._hideUi();
+        }
+      }, this._uiHideDelay);
+    }
+
+    _showUiImmediate() {
+      if (!this.nodes?.ui) return;
+      this.nodes.ui.classList.add('spot-ui-visible');
+      this.nodes.ui.classList.remove('spot-ui-hidden');
+      // ensure navs are visible when UI is shown
+      if (this.overlay) this.overlay.classList.remove('spot-nav-hidden');
+    }
+
+    _hideUi() {
+      if (!this.nodes?.ui) return;
+      this.nodes.ui.classList.add('spot-ui-hidden');
+      this.nodes.ui.classList.remove('spot-ui-visible');
+      // hide navs with outward animation
+      if (this.overlay) this.overlay.classList.add('spot-nav-hidden');
+    }
+
+    _toggleFullscreen() {
+      this._handleUserActivity();
+      if (this.state.fullscreen) this._exitFullscreen();
+      else this._enterFullscreen();
+    }
+
+    _enterFullscreen() {
+      const target = this.overlay;
+      if (!target || document.fullscreenElement === target) return;
+      if (target.requestFullscreen) {
+        const res = target.requestFullscreen();
+        if (res && typeof res.catch === 'function') res.catch(() => {});
+      }
+      this._syncFullscreenState();
+    }
+
+    _exitFullscreen() {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        const res = document.exitFullscreen();
+        if (res && typeof res.catch === 'function') res.catch(() => {});
+      }
+      this._syncFullscreenState();
+    }
+
+    _syncFullscreenState() {
+      const isFull = document.fullscreenElement === this.overlay;
+      this.state.fullscreen = Boolean(isFull);
+      this._updateFullscreenButton();
+    }
+
+    _updateFullscreenButton() {
+      const btn = this.nodes?.fullscreenBtn;
+      if (!btn) return;
+      // Swap SVG icon depending on fullscreen state
+      btn.innerHTML = this.state.fullscreen ? SVG_MINIMIZE : SVG_MAXIMIZE;
+      btn.setAttribute(
+        'aria-label',
+        this.state.fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'
+      );
+      btn.setAttribute('aria-pressed', String(this.state.fullscreen));
+    }
+
+    _animateSlide(direction, cb) {
+      this._handleUserActivity();
+      this._pendingSlideDir = direction || 0;
+      if (typeof cb === 'function') cb();
+    }
+
+    _playSlideIn(direction) {
+      const img = this.nodes?.imgNode;
+      if (!img) return;
+      const dir = direction || 0;
+      img.style.transition = 'none';
+      if (dir) {
+        img.style.transform = `translateX(${dir * 60}px) scale(0.96)`;
+        img.style.opacity = '0';
+      } else {
+        img.style.transform = 'translateX(0) scale(1)';
+        img.style.opacity = '1';
+      }
+      requestAnimationFrame(() => {
+        img.style.transition =
+          'transform 650ms cubic-bezier(0.3, 1, 0.3, 1), opacity 400ms ease';
+        img.style.transform = 'translateX(0) scale(1)';
+        img.style.opacity = '1';
+        const cleanup = () => {
+          img.style.transition = '';
+          img.style.transform = '';
+          img.removeEventListener('transitionend', cleanup);
+        };
+        img.addEventListener('transitionend', cleanup, { once: true });
+      });
+    }
+
+    _bindPinch() {
+      let pointers = new Map();
+      let initialDistance = 0;
+      let initialScale = 1;
+      const onPointerDown = (e) => {
+        if (!this.state.open) return;
+        this._handleUserActivity();
+        pointers.set(e.pointerId, e);
+        if (pointers.size === 2) {
+          // calculate distance
+          const [p1, p2] = Array.from(pointers.values());
+          initialDistance = Math.hypot(
+            p2.clientX - p1.clientX,
+            p2.clientY - p1.clientY
+          );
+          initialScale = this.state.scale;
+        }
+      };
+      const onPointerMove = (e) => {
+        if (!pointers.has(e.pointerId)) return;
+        if (!this.state.open) {
+          pointers.clear();
+          return;
+        }
+        this._handleUserActivity();
+        pointers.set(e.pointerId, e);
+        if (pointers.size === 2) {
+          const [p1, p2] = Array.from(pointers.values());
+          const currentDistance = Math.hypot(
+            p2.clientX - p1.clientX,
+            p2.clientY - p1.clientY
+          );
+          if (initialDistance > 0) {
+            const factor = currentDistance / initialDistance;
+            const moderated = 1 + (factor - 1) * 0.5;
+            this.state.scale = Math.min(
+              8,
+              Math.max(0.2, initialScale * moderated)
+            );
+            this._startRenderLoop();
+          }
+        }
+      };
+      const onPointerUp = (e) => {
+        pointers.delete(e.pointerId);
+        if (pointers.size < 2) {
+          initialDistance = 0;
+          initialScale = this.state.scale;
+        }
+      };
+      // Attach to image node
+      this.nodes.canvas.addEventListener('pointerdown', onPointerDown);
+      window.addEventListener('pointermove', onPointerMove);
+      window.addEventListener('pointerup', onPointerUp);
+      window.addEventListener('pointercancel', onPointerUp);
+    }
+
+    // Open a collection by index, show item index
+    openCollection(collectionIndex, itemIndex = 0) {
+      if (!this.collections[collectionIndex]) return;
+      this.state.open = true;
+      this.state.collectionIndex = collectionIndex;
+      this.state.itemIndex = itemIndex;
+      this._handleUserActivity();
+      this._showOverlay();
+      this._loadItem();
+    }
+
+    _showOverlay() {
+      this.overlay.style.display = 'block';
+      this._lastFocused = document.activeElement;
+      requestAnimationFrame(() => {
+        this.overlay.classList.add('spot-open');
+        this.overlay.setAttribute('aria-hidden', 'false');
+        document.documentElement.style.overflow = 'hidden';
+        this._showUiImmediate();
+        this._scheduleUiHide();
+        this.nodes.shell.focus();
+      });
+    }
+
+    close() {
+      if (!this.state.open) return;
+      this.overlay.classList.remove('spot-open');
+      this.overlay.setAttribute('aria-hidden', 'true');
+      document.documentElement.style.overflow = '';
+      this.state.open = false;
+      this.state.fullscreen = false;
+      this._exitFullscreen();
+      this._updateFullscreenButton();
+      clearTimeout(this._uiHideTimer);
+      clearTimeout(this._wheelSwipeTimer);
+      this._wheelSwipeAccum = 0;
+      this._wheelMode = null;
+      this._swipeActive = false;
+      this._swipeDirection = 0;
+      this._pendingSlideDir = 0;
+      this._hideUi();
+
+      // small delay to allow animation
+      setTimeout(() => {
+        if (!this.state.open) this.overlay.style.display = 'none';
+        if (this._lastFocused) this._lastFocused.focus();
+      }, 220);
+    }
+
+    prev() {
+      const c = this.collections[this.state.collectionIndex];
+      if (!c) return;
+      this.state.itemIndex =
+        (this.state.itemIndex - 1 + c.items.length) % c.items.length;
+      this._animateSlide(-1, () => this._loadItem());
+    }
+
+    next() {
+      const c = this.collections[this.state.collectionIndex];
+      if (!c) return;
+      this.state.itemIndex = (this.state.itemIndex + 1) % c.items.length;
+      this._animateSlide(1, () => this._loadItem());
+    }
+
+    _loadItem() {
+      const coll = this.collections[this.state.collectionIndex];
+      if (!coll) return;
+      const item = coll.items[this.state.itemIndex];
+      if (!item) return;
+
+      // Capture requested slide direction immediately so rapid successive
+      // navigations do not lose the intended animation direction.
+      const slideDir = this._pendingSlideDir || 0;
+      this._pendingSlideDir = 0;
+
+      this._resetRenderState();
+
+      // show spinner while loading
+      this.nodes.imgNode.style.opacity = '0';
+      this.nodes.imgNode.src = '';
+      this.nodes.counter.textContent = `${this.state.itemIndex + 1} / ${
+        coll.items.length
+      }`;
+      this._updateCaption(item.caption);
+      if (this.liveRegion) {
+        this.liveRegion.textContent = `Image ${this.state.itemIndex + 1} of ${
+          coll.items.length
+        }${item.caption ? ': ' + item.caption : ''}`;
+      }
+
+      // Load image directly into the overlay image node. This is simpler
+      // and avoids some preload/CORS race conditions with separate Image().
+      const node = this.nodes.imgNode;
+      // Remove previous handlers to avoid multiple invocations
+      node.onload = null;
+      node.onerror = null;
+
+      node.style.opacity = '0';
+      node.src = ''; // clear current
+
+      node.onload = () => {
+        // Fit by height and show
+        requestAnimationFrame(() => {
+          this._fitImageToViewport();
+          this._applyTransform({ immediate: true });
+          this._playSlideIn(slideDir);
+        });
+      };
+
+      node.onerror = () => {
+        node.src = '';
+        this._updateCaption('Failed to load image');
+        node.style.opacity = '1';
+      };
+
+      // Trigger load
+      node.src = item.src;
+      if (/\.svg($|\?)/i.test(item.src)) {
+        node.classList.add('spot-svg');
+      } else {
+        node.classList.remove('spot-svg');
+      }
+
+      if (node.complete && node.naturalWidth) {
+        // cached image won't fire onload
+        node.onload?.();
+      }
+    }
+
+    _updateCaption(text) {
+      if (!this.nodes || !this.nodes.caption) return;
+      const val = (text || '').trim();
+      if (!val) {
+        // No caption detected: hide caption element entirely
+        this.nodes.caption.textContent = '';
+        this.nodes.caption.classList.add('spot-caption-empty');
+        this.nodes.caption.style.display = 'none';
+      } else {
+        // Show caption
+        this.nodes.caption.textContent = val;
+        this.nodes.caption.classList.remove('spot-caption-empty');
+        this.nodes.caption.style.display = '';
+      }
+    }
+
+    _resetRenderState() {
+      this.state.scale = 1;
+      this.state.baseScale = 1;
+      this.state.translateX = 0;
+      this.state.translateY = 0;
+      this.renderState.scale = 1;
+      this.renderState.translateX = 0;
+      this.renderState.translateY = 0;
+      this._renderActive = false;
+      if (this._rafId) {
+        cancelAnimationFrame(this._rafId);
+        this._rafId = null;
+      }
+    }
+
+    _startRenderLoop() {
+      if (this._rafId) return;
+      this._renderActive = true;
+      this._renderLoop();
+    }
+
+    _renderLoop() {
+      if (!this._renderActive || !this.state.open) {
+        this._rafId = null;
+        return;
+      }
+
+      const { scale, translateX, translateY } = this.state;
+      const rs = this.renderState;
+
+      // Lerp factor - 0.15 provides a good balance of smoothness and responsiveness
+      const lerp = 0.15;
+
+      rs.scale += (scale - rs.scale) * lerp;
+      rs.translateX += (translateX - rs.translateX) * lerp;
+      rs.translateY += (translateY - rs.translateY) * lerp;
+
+      // Check for convergence
+      if (
+        Math.abs(scale - rs.scale) < 0.001 &&
+        Math.abs(translateX - rs.translateX) < 0.1 &&
+        Math.abs(translateY - rs.translateY) < 0.1
+      ) {
+        rs.scale = scale;
+        rs.translateX = translateX;
+        rs.translateY = translateY;
+        this._renderActive = false;
+      }
+
+      // Apply
+      if (this.nodes.transform) {
+        this.nodes.transform.style.transition = 'none';
+        this.nodes.transform.style.transform = `translate(${rs.translateX}px, ${rs.translateY}px) scale(${rs.scale})`;
+        this._updateZoomDisplay(rs.scale);
+
+        const img = this.nodes.imgNode;
+        img.style.cursor =
+          Math.abs(rs.scale - (this.state.baseScale || 1)) > 0.02 ||
+          Math.abs(rs.translateX) > 1 ||
+          Math.abs(rs.translateY) > 1
+            ? 'grab'
+            : 'zoom-out';
+      }
+
+      if (this._renderActive) {
+        this._rafId = requestAnimationFrame(() => this._renderLoop());
+      } else {
+        this._rafId = null;
+      }
+    }
+
+    _fitImageToViewport() {
+      const img = this.nodes?.imgNode;
+      if (!img) return;
+      const vw = Math.max(window.innerWidth, 1);
+      const vh = Math.max(window.innerHeight, 1);
+      const intrinsicWidth = img.naturalWidth || img.width || img.clientWidth;
+      const intrinsicHeight =
+        img.naturalHeight || img.height || img.clientHeight;
+      if (!intrinsicWidth || !intrinsicHeight) return;
+
+      const scaleW = vw / intrinsicWidth;
+      const scaleH = vh / intrinsicHeight;
+      const viewportLandscape = vw >= vh;
+
+      let baseScale = 1;
+
+      if (viewportLandscape) {
+        // Desktop / Landscape
+        // If image fits in at least one dimension at 100%, use 100%.
+        // Otherwise (too big in both), scale to fit the shortest viewport side (Height).
+        const fitsWidth = intrinsicWidth <= vw;
+        const fitsHeight = intrinsicHeight <= vh;
+
+        if (fitsWidth || fitsHeight) {
+          baseScale = 1;
+        } else {
+          baseScale = scaleH; // Shortest side in landscape is Height
+        }
+        // Cap at 1.0
+        baseScale = Math.min(baseScale, 1);
+      } else {
+        // Mobile / Portrait
+        // Use Contain logic (fit fully inside), but allow upscaling for small images.
+        baseScale = Math.min(scaleW, scaleH);
+      }
+
+      baseScale = Math.min(8, Math.max(0.05, baseScale));
+      this.state.baseScale = baseScale;
+      this.state.scale = baseScale;
+      this.state.translateX = 0;
+      this.state.translateY = 0;
+      this.renderState.scale = baseScale;
+      this.renderState.translateX = 0;
+      this.renderState.translateY = 0;
+    }
+
+    _applyTransform(options = {}) {
+      const immediate = options.immediate || !this.state.open;
+      if (!this.nodes || !this.nodes.transform) return;
+
+      const { scale, translateX, translateY } = this.state;
+      const wrapper = this.nodes.transform;
+
+      if (immediate) {
+        wrapper.style.transition = 'none';
+      } else {
+        wrapper.style.transition = ''; // Use CSS default
+      }
+
+      wrapper.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
+      this._updateZoomDisplay(scale);
+
+      const img = this.nodes.imgNode;
+      img.style.cursor =
+        Math.abs(scale - (this.state.baseScale || 1)) > 0.02 ||
+        Math.abs(translateX) > 1 ||
+        Math.abs(translateY) > 1
+          ? 'grab'
+          : 'zoom-out';
+    }
+
+    _updateZoomDisplay(scale) {
+      if (!this.nodes || !this.nodes.zoomDisplay) return;
+      const pct = Math.round((scale || 1) * 100);
+      this.nodes.zoomDisplay.textContent = `${pct}%`;
+      this.nodes.zoomDisplay.title = `Reset zoom (${pct}%)`;
+    }
+
+    _zoomBy(factor) {
+      this._handleUserActivity();
+      this.state.scale = Math.min(8, Math.max(0.2, this.state.scale * factor));
+      // adjust translate to keep center (approx)
+      this._startRenderLoop();
+    }
+
+    _resetZoom() {
+      this._handleUserActivity();
+      this.state.scale = this.state.baseScale || 1;
+      this.state.translateX = 0;
+      this.state.translateY = 0;
+      this._startRenderLoop();
+    }
+
+    _zoomAtPoint(factor, clientX, clientY) {
+      this._handleUserActivity();
+      // Zoom keeping pointer anchored
+      const rect = (
+        this.nodes.transform || this.nodes.imgNode
+      ).getBoundingClientRect();
+      const imgCx = clientX - rect.left;
+      const imgCy = clientY - rect.top;
+      const prevScale = this.state.scale;
+      const newScale = Math.min(8, Math.max(0.2, prevScale * factor));
+      // compute new translate so that image point under cursor stays under cursor
+      // formula: (tx,ty) in CSS translate coords (px). compute relative point ratios
+      const relX = imgCx / rect.width; // 0..1 within current rendered image
+      const relY = imgCy / rect.height;
+      // convert to image coordinate in CSS pixel space (before transform)
+      const beforeScale = prevScale;
+      const afterScale = newScale;
+      // compute offsets
+      const centerXBefore = rect.width / 2;
+      const centerYBefore = rect.height / 2;
+      // Simplified approach: adjust translate by difference scaled
+      const dx = (relX - 0.5) * rect.width * (afterScale / beforeScale - 1);
+      const dy = (relY - 0.5) * rect.height * (afterScale / beforeScale - 1);
+      this.state.translateX -= dx;
+      this.state.translateY -= dy;
+      this.state.scale = newScale;
+      this._startRenderLoop();
+    }
+
+    // Programmatic helper to attach to external nodes (if needed)
+    attachImage(imgEl, collectionIndex, itemIndex) {
+      imgEl.dataset.spotlightCollection = String(collectionIndex);
+      imgEl.dataset.spotlightIndex = String(itemIndex);
+      imgEl.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.openCollection(collectionIndex, itemIndex);
+      });
+    }
+
+    _injectStyles() {
+      if (document.getElementById('spotlight-styles')) return;
+      const css = `
+      :root {
+        --spot-bg: rgba(6,6,8,1);
+        --spot-ui-bg: rgba(20,20,24,0.78);
+        --spot-ui-fg: rgba(255,255,255,0.95);
+        --spot-muted: rgba(255,255,255,0.74);
+        --spot-btn-bg: rgba(255,255,255,0.08);
+        --spot-btn-border: rgba(255,255,255,0.1);
+        --spot-shadow: 0 10px 40px rgba(0,0,0,0.45);
+        --spot-anim: 300ms cubic-bezier(.22,.9,.35,1);
+        --spot-font: system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;
+      }
+      @media (prefers-color-scheme: light) {
+        :root {
+          --spot-bg: rgba(250,250,252,1);
+          --spot-ui-bg: rgba(255,255,255,0.8);
+          --spot-ui-fg: rgba(17,17,20,0.92);
+          --spot-muted: rgba(17,17,20,0.7);
+          --spot-btn-bg: rgba(0,0,0,0.05);
+          --spot-btn-border: rgba(0,0,0,0.1);
+          --spot-shadow: 0 2px 80px rgba(0,0,0,0.15);
+        }
+        #spot-overlay .spot-nav {
+          background: rgba(255,255,255,0.92);
+          border-color: rgba(0,0,0,0.06);
+          box-shadow: 0 6px 18px rgba(10,10,10,0.06);
+        }
+        #spot-overlay .spot-nav:hover {
+          background: rgba(245,245,245,0.98);
+        }
+      }
+      #spot-overlay { display:none; position:fixed; inset:0; z-index:2147483646; font-family:var(--spot-font); -webkit-font-smoothing:antialiased; opacity:0; transition:opacity var(--spot-anim); touch-action:none; }
+      #spot-overlay, #spot-overlay * { -webkit-user-select:none; user-select:none; }
+      #spot-overlay.spot-open { pointer-events:auto; opacity:1; }
+      #spot-bg { position:fixed; inset:0; background:var(--spot-bg); transition:opacity var(--spot-anim); opacity:0; }
+      #spot-shell { position:fixed; inset:0; pointer-events:none; opacity:0; transform:scale(0.996); transition:opacity var(--spot-anim), transform var(--spot-anim); }
+      #spot-overlay.spot-open #spot-shell { opacity:1; transform:scale(1); }
+      #spot-overlay.spot-open #spot-bg { opacity:1; }
+      #spot-stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:2147483645; }
+      #spot-canvas { position:absolute; inset:0; overflow:hidden; pointer-events:auto; display:flex; align-items:center; justify-content:center; }
+      #spot-transform { will-change:transform; touch-action:none; transform-origin:center center; cursor:grab; transition: transform var(--spot-anim); }
+      #spot-transform img { display:block; width:auto; height:auto; max-width:none; max-height:none; object-fit:contain; user-select:none; -webkit-user-drag:none; pointer-events:auto; transition:opacity 180ms ease; }
+      #spot-transform img.spot-svg { width:100%; height:auto; max-width:100vw; max-height:100vh; }
+      .spot-nav { position:absolute; top:50%; transform:translateY(-50%); width:50px; height:50px; border-radius:50%; background:rgba(0,0,0,0.35); color:var(--spot-ui-fg); border:1px solid rgba(255,255,255,0.12); backdrop-filter:blur(6px); box-shadow:var(--spot-shadow); display:flex; align-items:center; justify-content:center; font-size:0; cursor:pointer; pointer-events:auto; opacity:1; transition:background var(--spot-anim), transform var(--spot-anim), opacity var(--spot-anim); z-index:2147483650; }
+      .spot-nav svg { width:30px; height:30px; opacity:0.5; transition:opacity var(--spot-anim); }
+      .spot-nav:hover { background: rgba(0,0,0,0.45); }
+      .spot-nav:hover svg { opacity:1; }
+      .spot-nav[data-dir="-1"] { left:22px; --nav-offset: -40px; }
+      .spot-nav[data-dir="1"] { right:22px; --nav-offset: 40px; }
+      #spot-ui { position:fixed; inset:0; pointer-events:none; display:flex; flex-direction:column; justify-content:space-between; gap:20px; z-index:2147483647; }
+      .spot-topbar, .spot-caption { pointer-events:auto; background:var(--spot-ui-bg); color:var(--spot-ui-fg);  box-shadow:var(--spot-shadow); backdrop-filter:blur(18px); }
+      .spot-topbar { display:flex; align-items:center; gap:18px; height:50px; }
+      .spot-controls { margin-left:auto; display:flex; align-items:center; gap:10px; }
+      .spot-controls svg { width:21px; height:21px; }
+      .spot-controls .spot-btn { opacity:0.5; transition:opacity var(--spot-anim), background 150ms ease; will-change:opacity; }
+      .spot-controls .spot-btn:hover { opacity:1; }
+      .spot-counter {
+        font-size:15px;
+        font-weight:600;
+        letter-spacing:0.08em;
+        color:var(--spot-ui-fg);
+        opacity:0.5;
+        /* Reserve enough width for "XXX / XXX" without shifting layout.
+           ch unit measures width of "0" in current font; choose a safe value. */
+        min-width: 10ch;
+        max-width: 12ch;
+        height: 50px;
+        padding: 15px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        white-space: nowrap;
+        /* Request monospaced digits so changing numbers don't change glyph widths */
+        font-variant-numeric: tabular-nums;
+        -webkit-font-feature-settings: "tnum" 1;
+        font-feature-settings: "tnum" 1;
+      }
+      .spot-btn { width:50px; height:50px; border-radius:6px; border:none; background:transparent; color:var(--spot-ui-fg); display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:600; cursor:pointer; transition:background 150ms ease; }
+      .spot-btn:active { transform:none; }
+      #spot-caption { padding:14px 18px; font-size:21px; line-height:1.45; color:var(--spot-muted); }
+      #spot-caption.spot-caption-empty { opacity:0; pointer-events:none; }
+      #spot-overlay.spot-nav-hidden .spot-nav { opacity:0; pointer-events:none; transform:translateY(-50%) translateX(var(--nav-offset)); }
+      #spot-ui .spot-topbar, #spot-ui .spot-caption { transition:opacity var(--spot-anim), transform var(--spot-anim); will-change:opacity, transform; }
+      #spot-ui.spot-ui-hidden .spot-topbar { opacity:0; transform:translateY(-18px); pointer-events:none; }
+      #spot-ui.spot-ui-hidden .spot-caption { opacity:0; transform:translateY(18px); pointer-events:none; }
+      #spot-ui.spot-ui-visible .spot-topbar, #spot-ui.spot-ui-visible .spot-caption { opacity:1; transform:translateY(0); }
+      @media (max-width:600px) {
+        #spot-ui { padding:12px; }
+        .spot-topbar { gap:10px; }
+        .spot-counter { min-width:auto; font-size:14px; padding:0 8px; height:40px; }
+        .spot-btn { width:40px; height:40px; }
+        .spot-nav { width:40px; height:40px; }
+        .spot-nav[data-dir="-1"] { left:10px; --nav-offset: -20px; }
+        .spot-nav[data-dir="1"] { right:10px; --nav-offset: 20px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        :root { --spot-anim: 0s; }
+        #spot-transform { transition: none; }
+      }
+      `;
+
+      const style = create('style', {
+        id: 'spotlight-styles',
+        type: 'text/css',
+      });
+      style.appendChild(document.createTextNode(css));
+      document.head.appendChild(style);
+    }
+  }
+
+  function initSpotlight() {
+    if (window.__spotlight_instance) return window.__spotlight_instance;
+    const inst = new Spotlight();
+    window.__spotlight_instance = inst;
+    return inst;
+  }
+
+  window.addEventListener('click', (e) => {
+    const target = e.target.closest('img');
+    if (!target) return;
+    const container = target.closest('article, .gallery');
+    if (!container) return;
+
+    e.preventDefault();
+    const inst = initSpotlight();
+    const collIndex = parseInt(target.dataset.spotlightCollection || '0', 10);
+    const itemIndex = parseInt(target.dataset.spotlightIndex || '0', 10);
+    inst.openCollection(collIndex, itemIndex);
+  });
+
+  // Expose a minimal public API
+  window.Spotlight = {
+    get instance() {
+      return window.__spotlight_instance || null;
+    },
+    open: (collectionIndex = 0, itemIndex = 0) => {
+      if (!window.__spotlight_instance) initSpotlightOnce();
+      window.__spotlight_instance.openCollection(collectionIndex, itemIndex);
+    },
+    rescan: () => {
+      // Re-scan page (e.g. after dynamic content load)
+      const inst = window.__spotlight_instance || initSpotlightOnce();
+      // Simple strategy: rebuild instance
+      try {
+        // remove overlay if present
+        if (inst.overlay && inst.overlay.parentNode)
+          inst.overlay.parentNode.removeChild(inst.overlay);
+      } catch (err) {}
+      delete window.__spotlight_instance;
+      return initSpotlightOnce();
+    },
+  };
+})();

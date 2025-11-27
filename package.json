@@ -1,0 +1,40 @@
+{
+  "name": "spotlight",
+  "version": "1.0.0",
+  "description": "Spotlight JS is a lightweight, self-contained image viewer that automatically transforms images on any webpage into a modern full-screen gallery with zoom, pan, swipe navigation, pinch-to-zoom, keyboard shortcuts, and fullscreen support.",
+  "main": "index.js",
+  "scripts": {
+    "build": "vite build",
+    "lint": "eslint src --ext .js",
+    "format": "prettier --write ."
+  },
+  "keywords": [
+    "image",
+    "image-viewer",
+    "spotlight",
+    "lightbox",
+    "gallery",
+    "photo-viewer",
+    "javascript",
+    "vanilla-js",
+    "frontend",
+    "responsive",
+    "lazy-loading",
+    "zoom",
+    "touch",
+    "gestures",
+    "accessibility"
+  ],
+  "author": "Anastasia Shebalkina",
+  "license": "MIT",
+  "type": "commonjs",
+  "devDependencies": {
+    "csso": "^5.0.5",
+    "eslint": "^9.39.1",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-import": "^2.32.0",
+    "prettier": "^3.7.1",
+    "svgo": "^3.3.2",
+    "vite": "^7.2.4"
+  }
+}
