@@ -4,6 +4,8 @@ Spotlight JS is a lightweight, self-contained image viewer that automatically tr
 
 It scans `article` elements and elements with the `gallery` class, builds image collections automatically, and opens them in a smooth, high-performance overlay. No setup, no markup changes — just include the script and it works.
 
+[Try the live demo](https://dev.jarpex.ru/spotlight-js/)
+
 ## Features
 
 - Automatic detection of images inside `article` and `.gallery`

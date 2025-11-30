@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spotlight JS – Demo</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌅</text></svg>">
+
+    <script src="../dist/spotlight.min.js"></script>
+    
+    <!-- Highlight.js -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script>hljs.highlightAll();</script>
+
+    <style>
+        :root {
+            --primary-color: #2563eb;
+            --text-color: #1f2937;
+            --bg-color: #f9fafb;
+            --code-bg: #1f2937;
+            --code-text: #e5e7eb;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            line-height: 1.6;
+            color: var(--text-color);
+            background: var(--bg-color);
+            margin: 0;
+            padding: 0;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 2rem 1rem;
+        }
+        header {
+            text-align: center;
+            margin-bottom: 3rem;
+            padding-bottom: 2rem;
+            border-bottom: 1px solid #e5e7eb;
+        }
+        h1 {
+            font-size: 2.5rem;
+            margin-bottom: 0.5rem;
+            letter-spacing: -0.025em;
+        }
+        h2 {
+            margin-top: 2.5rem;
+            font-size: 1.5rem;
+            border-left: 4px solid var(--primary-color);
+            padding-left: 1rem;
+        }
+        p {
+            margin-bottom: 1rem;
+        }
+        a {
+            color: var(--primary-color);
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        pre {
+            background: var(--code-bg);
+            color: var(--code-text);
+            padding: 1rem;
+            border-radius: 0.5rem;
+            overflow-x: auto;
+            font-size: 0.875rem;
+            margin: 1.5rem 0;
+        }
+        code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        }
+        .gallery-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 1rem;
+            margin: 1.5rem 0;
+        }
+        .gallery-grid img {
+            width: 100%;
+            height: 150px;
+            object-fit: cover;
+            border-radius: 0.5rem;
+            cursor: zoom-in;
+            transition: transform 0.2s;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .gallery-grid img:hover {
+            transform: scale(1.02);
+        }
+        article {
+            background: white;
+            padding: 2rem;
+            border-radius: 0.5rem;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            margin-top: 1.5rem;
+        }
+        article img {
+            max-width: 100%;
+            height: auto;
+            border-radius: 0.375rem;
+            cursor: zoom-in;
+        }
+        figure {
+            margin: 1.5rem 0;
+        }
+        figcaption {
+            color: #6b7280;
+            font-size: 0.875rem;
+            text-align: center;
+            margin-top: 0.5rem;
+        }
+        .badge {
+            display: inline-block;
+            padding: 0.25rem 0.75rem;
+            background: #dbeafe;
+            color: #1e40af;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <span class="badge">v1.0.1</span>
+            <h1>🌅 Spotlight JS</h1>
+            <p>A lightweight, dependency-free lightbox gallery for modern websites.</p>
+            <p>
+                <a href="https://github.com/jarpex/spotlight-js">View on GitHub</a> &middot;
+                <a href="#examples">View Examples</a> &middot;
+                <a href="https://github.com/jarpex/spotlight-js/issues">Report Issues</a>
+            </p>
+        </header>
+
+        <section id="examples">
+            <h2>Gallery Mode</h2>
+            <p>Simply wrap your images in a container with the <code>.gallery</code> class. Spotlight will automatically group them into a collection.</p>
+            
+            <div class="gallery gallery-grid">
+                <img src="1.webp" alt="Fly agaric mushrooms">
+                <img src="2.webp" alt="Pink water lilies">
+                <img src="3.webp" alt="Crabapple blossoms">
+            </div>
+
+<pre><code class="language-html">&lt;div class="gallery"&gt;
+    &lt;img src="1.webp" alt="Fly agaric mushrooms"&gt;
+    &lt;img src="2.webp" alt="Pink water lilies"&gt;
+    &lt;img src="3.webp" alt="Crabapple blossoms"&gt;
+&lt;/div&gt;</code></pre>
+
+            <h2>Article Mode</h2>
+            <p>Spotlight automatically detects images inside <code>&lt;article&gt;</code> tags. It handles captions from <code>figcaption</code> or <code>alt</code> attributes intelligently.</p>
+
+            <article>
+                <h3>Moscow Landmarks</h3>
+                <p>The Spasskaya Tower is the main tower on the eastern wall of the Moscow Kremlin which overlooks the Red Square.</p>
+                
+                <img src="4.webp" alt="Spasskaya Tower of the Moscow Kremlin" style="width: 100%">
+                
+                <p>Another iconic location is VDNKh, a permanent general purpose trade show and amusement park in Moscow.</p>
+                
+                <figure>
+                    <img src="5.webp" alt="VDNKh Park, Moscow">
+                    <figcaption>Friendship of the Peoples Fountain.</figcaption>
+                </figure>
+            </article>
+
+<pre><code class="language-html">&lt;article&gt;
+    &lt;h3&gt;Moscow Landmarks&lt;/h3&gt;
+    &lt;p&gt;...&lt;/p&gt;
+    &lt;img src="4.webp" alt="Spasskaya Tower"&gt;
+    &lt;p&gt;...&lt;/p&gt;
+    &lt;figure&gt;
+        &lt;img src="5.webp" alt="VDNKh Park, Moscow"&gt;
+        &lt;figcaption&gt;Friendship of the Peoples Fountain.&lt;/figcaption&gt;
+    &lt;/figure&gt;
+&lt;/article&gt;</code></pre>
+        </section>
+        
+        <footer style="text-align: center; margin-top: 4rem; color: #6b7280; font-size: 0.875rem;">
+            <p>&copy; 2025 Anastasia Shebalkina. Licensed under MIT.</p>
+        </footer>
+    </div>
+</body>
+</html>
