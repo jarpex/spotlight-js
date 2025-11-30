@@ -38,6 +38,7 @@
   const SWIPE_TIMEOUT = 500; // Max time for a swipe gesture (ms)
   const SWIPE_SCALE_THRESHOLD = 0.25; // Max scale deviation to allow swipe navigation
   const SWIPE_THRESHOLD_PX = 20; // Minimum pixel distance for a swipe
+  const SWIPE_DOWN_THRESHOLD = 150; // Pixels to drag down to close
 
   // Wheel Interaction
   const WHEEL_SCALE_THRESHOLD_NEAR = 0.8; // Threshold for "near base scale" check
@@ -45,7 +46,7 @@
   const WHEEL_SWIPE_EASING = 1.5; // Threshold for easing out of wheel swipe
   const SWIPE_DEBOUNCE = 500; // Debounce time for rapid swipes (ms)
   const WHEEL_RATIO_THRESHOLD = 0.65; // Ratio of X to Y delta for horizontal swipe detection
-  const WHEEL_Y_THRESHOLD = 2; // Max Y delta for horizontal swipe detection
+  const WHEEL_Y_THRESHOLD = 10; // Max Y delta for horizontal swipe detection
   const WHEEL_RESET_DELAY = 140; // Delay to reset wheel gesture state (ms)
 
   // Animation & UI
@@ -474,6 +475,8 @@
         this._dragPointerId = e.pointerId;
         this._dragLast.x = e.clientX;
         this._dragLast.y = e.clientY;
+        this._dragStart = { x: e.clientX, y: e.clientY };
+        this._isVerticalSwipe = false;
         try {
           this.nodes.imgNode.setPointerCapture(e.pointerId);
         } catch {}
@@ -487,6 +490,39 @@
         // If pinching, cancel drag to avoid conflict
         if (this._isPinching) {
           this._dragPointerId = null;
+          return;
+        }
+
+        // Check for swipe down start
+        if (!this._isVerticalSwipe && this._dragStart) {
+          // Only allow swipe-to-close on touch devices
+          if (e.pointerType !== 'touch') {
+            // For mouse/pen, treat as normal pan (fall through)
+          } else {
+            const totalDy = e.clientY - this._dragStart.y;
+            const totalDx = e.clientX - this._dragStart.x;
+            const isZoomedOut =
+              Math.abs(this.state.scale - (this.state.baseScale || 1)) <
+              PAN_THRESHOLD;
+
+            if (
+              isZoomedOut &&
+              totalDy > 0 &&
+              Math.abs(totalDy) > Math.abs(totalDx) &&
+              totalDy > SWIPE_THRESHOLD_PX
+            ) {
+              this._isVerticalSwipe = true;
+              this._swipeIntent = true;
+            }
+          }
+        }
+
+        if (this._isVerticalSwipe) {
+          const dy = e.clientY - this._dragLast.y;
+          this.state.translateY += dy;
+          this._dragLast.x = e.clientX;
+          this._dragLast.y = e.clientY;
+          this._startRenderLoop();
           return;
         }
 
@@ -510,6 +546,17 @@
       });
       window.addEventListener('pointerup', (e) => {
         if (this._dragPointerId === e.pointerId) {
+          if (this._isVerticalSwipe) {
+            const totalDy = e.clientY - this._dragStart.y;
+            if (totalDy > SWIPE_DOWN_THRESHOLD) {
+              this.close();
+            } else {
+              this.state.translateY = 0;
+              this._constrainAndSync();
+              this._startRenderLoop();
+            }
+            this._isVerticalSwipe = false;
+          }
           try {
             this.nodes.imgNode.releasePointerCapture(e.pointerId);
           } catch {}
@@ -676,13 +723,25 @@
           WHEEL_SCALE_THRESHOLD_NEAR,
           base * WHEEL_SCALE_THRESHOLD_FACTOR
         );
+
+      // If both deltas are very small, don't lock mode yet
+      if (absX < 1 && absY < 1) {
+        return 'zoom'; // Default to zoom/vertical logic for now
+      }
+
       const horizontal =
         (absX > absY * WHEEL_RATIO_THRESHOLD && absX - absY > 1) ||
-        absY < WHEEL_Y_THRESHOLD;
+        (absY < WHEEL_Y_THRESHOLD && absX > WHEEL_Y_THRESHOLD); // Only treat as horizontal if X is significant
+
       if (nearBase && horizontal) {
         this._wheelMode = 'swipe';
-      } else {
+      } else if (absY > absX) {
+        // Clearly vertical
         this._wheelMode = 'zoom';
+      } else {
+        // Ambiguous (e.g. absX > absY but diff is small)
+        // Don't lock. Return 'zoom' to prevent default but keep listening.
+        return 'zoom';
       }
       return this._wheelMode;
     }
@@ -704,6 +763,31 @@
         this._zoomAtPoint(factor, event.clientX, event.clientY);
         return;
       }
+
+      // Trackpad vertical swipe (pull down to close)
+      const isZoomedOut =
+        Math.abs(this.state.scale - (this.state.baseScale || 1)) <
+        PAN_THRESHOLD;
+      if (isZoomedOut) {
+        // Only trigger if vertical movement is dominant and significant
+        // This prevents accidental vertical swipes when trying to swipe horizontally
+        if (
+          Math.abs(event.deltaY) > Math.abs(event.deltaX) &&
+          Math.abs(event.deltaY) > 1
+        ) {
+          this._isVerticalSwipe = true;
+          this._swipeIntent = true;
+          // Invert direction based on user feedback ("it is upward")
+          // Standard scrolling: Pull down -> deltaY > 0. We want image to move down (translateY > 0).
+          // So we ADD deltaY.
+          this.state.translateY += event.deltaY;
+          // Prevent moving up (negative translateY) during swipe-to-close
+          if (this.state.translateY < 0) {
+            this.state.translateY = 0;
+          }
+          this._startRenderLoop();
+        }
+      }
     }
 
     _scheduleWheelGestureReset() {
@@ -718,6 +802,16 @@
       if (this._wheelSwipeTimer) {
         clearTimeout(this._wheelSwipeTimer);
         this._wheelSwipeTimer = null;
+      }
+      if (this._isVerticalSwipe) {
+        if (this.state.translateY > SWIPE_DOWN_THRESHOLD) {
+          this.close();
+        } else {
+          this.state.translateY = 0;
+          this._constrainAndSync();
+          this._startRenderLoop();
+        }
+        this._isVerticalSwipe = false;
       }
       this._wheelSwipeAccum = 0;
       this._swipeActive = false;
@@ -865,6 +959,7 @@
           return;
         }
         this._handleUserActivity();
+        this._swipeIntent = false;
         this.pointers.set(e.pointerId, e);
         if (this.pointers.size === POINTERS_COUNT) {
           this._isPinching = true;
@@ -1097,6 +1192,21 @@
       this.renderState.translateX = 0;
       this.renderState.translateY = 0;
       this._renderActive = false;
+      if (this.nodes.bg) {
+        this.nodes.bg.style.opacity = '';
+      }
+      if (this.nodes.ui) {
+        this.nodes.ui.style.opacity = '';
+      }
+      if (this.nodes.prevBtn) {
+        this.nodes.prevBtn.style.opacity = '';
+      }
+      if (this.nodes.nextBtn) {
+        this.nodes.nextBtn.style.opacity = '';
+      }
+      if (this.nodes.imgNode) {
+        this.nodes.imgNode.style.opacity = '';
+      }
       if (this._rafId) {
         cancelAnimationFrame(this._rafId);
         this._rafId = null;
@@ -1145,6 +1255,8 @@
         this.nodes.transform.style.transform = `translate(${rs.translateX}px, ${rs.translateY}px) scale(${rs.scale})`;
         this._updateZoomDisplay(rs.scale);
 
+        this._updateSwipeAnimation(rs.translateY);
+
         const img = this.nodes.imgNode;
         img.style.cursor =
           Math.abs(rs.scale - (this.state.baseScale || 1)) >
@@ -1162,6 +1274,49 @@
       }
     }
 
+    _updateSwipeAnimation(translateY) {
+      // Only animate if we are effectively zoomed out (swipe-to-close mode)
+      // AND we have an explicit swipe intent (from touch or trackpad swipe)
+      // This prevents mouse panning from triggering the fade animation.
+      const isZoomedOut =
+        Math.abs(this.state.scale - (this.state.baseScale || 1)) <
+        PAN_THRESHOLD;
+
+      const nodesToFade = [
+        this.nodes.bg,
+        this.nodes.ui,
+        this.nodes.prevBtn,
+        this.nodes.nextBtn,
+        this.nodes.imgNode,
+      ];
+
+      if (
+        translateY > 0 &&
+        this.state.open &&
+        isZoomedOut &&
+        this._swipeIntent
+      ) {
+        const SWIPE_ANIM_FACTOR = 1.5;
+        const progress = Math.min(
+          1,
+          Math.abs(translateY) / (SWIPE_DOWN_THRESHOLD * SWIPE_ANIM_FACTOR)
+        );
+        const opacity = 1 - progress;
+
+        nodesToFade.forEach((node) => {
+          if (node) {
+            node.style.opacity = String(opacity);
+          }
+        });
+      } else {
+        nodesToFade.forEach((node) => {
+          if (node) {
+            node.style.opacity = '';
+          }
+        });
+      }
+    }
+
     _checkConvergence(scale, translateX, translateY, rs) {
       if (
         Math.abs(scale - rs.scale) < CONVERGENCE_SCALE &&
@@ -1172,6 +1327,10 @@
         rs.translateX = translateX;
         rs.translateY = translateY;
         this._renderActive = false;
+        // Reset swipe intent when animation settles (e.g. bounce back complete)
+        if (Math.abs(translateY) < 1) {
+          this._swipeIntent = false;
+        }
       }
     }
 
@@ -1309,6 +1468,7 @@
 
     _zoomAtPoint(factor, clientX, clientY) {
       this._handleUserActivity();
+      this._swipeIntent = false;
       // Zoom keeping pointer anchored
       const rect = (
         this.nodes.transform || this.nodes.imgNode
@@ -1411,14 +1571,16 @@
       #spot-transform { will-change:transform; touch-action:none; transform-origin:center center; cursor:grab; transition: transform var(--spot-anim); }
       #spot-transform img { display:block; width:auto; height:auto; max-width:none; max-height:none; object-fit:contain; user-select:none; -webkit-user-drag:none; pointer-events:auto; transition:opacity 180ms ease; }
       #spot-transform img.spot-svg { width:100%; height:auto; max-width:100vw; max-height:100vh; }
-      .spot-nav { position:absolute; top:50%; transform:translateY(-50%); width:50px; height:50px; border-radius:50%; background:rgba(0,0,0,0.35); color:var(--spot-ui-fg); border:1px solid rgba(255,255,255,0.12); backdrop-filter:blur(6px); box-shadow:var(--spot-shadow); display:flex; align-items:center; justify-content:center; font-size:0; cursor:pointer; pointer-events:auto; opacity:1; transition:background var(--spot-anim), transform var(--spot-anim), opacity var(--spot-anim); z-index:2147483650; }
+      .spot-nav { position:absolute; top:50%; transform:translateY(-50%); width:50px; height:50px; border-radius:50%; background:rgba(0,0,0,0.35); color:var(--spot-ui-fg); border:1px solid rgba(255,255,255,0.12); backdrop-filter:blur(0px); box-shadow:var(--spot-shadow); display:flex; align-items:center; justify-content:center; font-size:0; cursor:pointer; pointer-events:auto; opacity:1; transition:background var(--spot-anim), transform var(--spot-anim), opacity var(--spot-anim), backdrop-filter var(--spot-anim); z-index:2147483650; }
+      #spot-overlay.spot-open .spot-nav { backdrop-filter:blur(6px); }
       .spot-nav svg { width:30px; height:30px; opacity:0.5; transition:opacity var(--spot-anim); }
       .spot-nav:hover { background: rgba(0,0,0,0.45); }
       .spot-nav:hover svg { opacity:1; }
       .spot-nav[data-dir="-1"] { left:22px; --nav-offset: -40px; }
       .spot-nav[data-dir="1"] { right:22px; --nav-offset: 40px; }
       #spot-ui { position:fixed; inset:0; pointer-events:none; display:flex; flex-direction:column; justify-content:space-between; gap:20px; z-index:2147483647; }
-      .spot-topbar, .spot-caption { pointer-events:auto; background:var(--spot-ui-bg); color:var(--spot-ui-fg);  box-shadow:var(--spot-shadow); backdrop-filter:blur(18px); }
+      .spot-topbar, .spot-caption { pointer-events:auto; background:var(--spot-ui-bg); color:var(--spot-ui-fg);  box-shadow:var(--spot-shadow); backdrop-filter:blur(0px); transition: backdrop-filter var(--spot-anim); }
+      #spot-overlay.spot-open .spot-topbar, #spot-overlay.spot-open .spot-caption { backdrop-filter:blur(18px); }
       .spot-topbar { display:flex; align-items:center; gap:18px; height:50px; }
       .spot-controls { margin-left:auto; display:flex; align-items:center; gap:10px; }
       .spot-controls svg { width:21px; height:21px; }
@@ -1460,7 +1622,7 @@
         #spot-fullscreen { display:none; }
         .spot-topbar { gap:10px; height:75px; padding 0 24px;}
         .spot-controls svg { width: 25px; height: 25px; }
-        .spot-caption {font-size:14px;}
+        #spot-caption {font-size:16px;}
         .spot-nav { display:none; }
         .spot-nav[data-dir="-1"] { left:10px; --nav-offset: -20px; }
         .spot-nav[data-dir="1"] { right:10px; --nav-offset: 20px; }
