@@ -1326,11 +1326,12 @@
       #spot-ui.spot-ui-hidden .spot-caption { opacity:0; transform:translateY(18px); pointer-events:none; }
       #spot-ui.spot-ui-visible .spot-topbar, #spot-ui.spot-ui-visible .spot-caption { opacity:1; transform:translateY(0); }
       @media (max-width:600px) {
-        #spot-ui { padding:12px; }
-        .spot-topbar { gap:10px; }
-        .spot-counter { min-width:auto; font-size:14px; padding:0 8px; height:40px; }
-        .spot-btn { width:40px; height:40px; }
-        .spot-nav { width:40px; height:40px; }
+        #spot-ui { flex-direction: column-reverse;}
+        #spot-fullscreen { display:none; }
+        .spot-topbar { gap:10px; height:75px; padding 0 24px;}
+        .spot-controls svg { width: 25px; height: 25px; }
+        .spot-caption {font-size:16px;}
+        .spot-nav { display:none; }
         .spot-nav[data-dir="-1"] { left:10px; --nav-offset: -20px; }
         .spot-nav[data-dir="1"] { right:10px; --nav-offset: 20px; }
       }
