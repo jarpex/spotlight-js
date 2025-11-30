@@ -30,7 +30,8 @@
 
   // Pinch Gesture
   const POINTERS_COUNT = 2; // Number of pointers for pinch gesture
-  const PINCH_MODERATION = 0.5; // Moderation factor for pinch zoom sensitivity
+  const PINCH_MODERATION = 1; // Moderation factor for pinch zoom sensitivity
+  const PINCH_SENSITIVITY_TOUCH = 1.1; // Sensitivity for touch devices
 
   // Pan & Swipe (Touch)
   const PAN_THRESHOLD = 0.1; // Threshold for panning vs zooming on touch
@@ -117,6 +118,10 @@
       this._swipeDirection = 0;
       this._pendingSlideDir = 0;
       this.touchStart = null;
+      this._dragPointerId = null;
+      this._dragLast = { x: 0, y: 0 };
+      this._isPinching = false;
+      this.pointers = new Map();
       this._init();
     }
 
@@ -458,8 +463,6 @@
       );
 
       // Drag image (pan)
-      let dragging = false;
-      const last = { x: 0, y: 0 };
       this.nodes.imgNode.addEventListener('pointerdown', (e) => {
         if (!this.state.open) {
           return;
@@ -468,18 +471,24 @@
         if (!e.isPrimary) {
           return;
         }
-        dragging = true;
-        last.x = e.clientX;
-        last.y = e.clientY;
+        this._dragPointerId = e.pointerId;
+        this._dragLast.x = e.clientX;
+        this._dragLast.y = e.clientY;
         try {
           this.nodes.imgNode.setPointerCapture(e.pointerId);
         } catch {}
       });
       window.addEventListener('pointermove', (e) => {
-        if (!dragging) {
+        if (this._dragPointerId !== e.pointerId) {
           return;
         }
         this._handleUserActivity();
+
+        // If pinching, cancel drag to avoid conflict
+        if (this._isPinching) {
+          this._dragPointerId = null;
+          return;
+        }
 
         // Disable pan without zoom on mobile/touch
         if (
@@ -490,21 +499,22 @@
           return;
         }
 
-        const dx = e.clientX - last.x;
-        const dy = e.clientY - last.y;
-        last.x = e.clientX;
-        last.y = e.clientY;
+        const dx = e.clientX - this._dragLast.x;
+        const dy = e.clientY - this._dragLast.y;
+        this._dragLast.x = e.clientX;
+        this._dragLast.y = e.clientY;
         this.state.translateX += dx;
         this.state.translateY += dy;
+        this._constrainAndSync();
         this._startRenderLoop();
       });
       window.addEventListener('pointerup', (e) => {
-        if (dragging) {
+        if (this._dragPointerId === e.pointerId) {
           try {
             this.nodes.imgNode.releasePointerCapture(e.pointerId);
           } catch {}
+          this._dragPointerId = null;
         }
-        dragging = false;
       });
 
       // Touch swipes: detect horizontal swipe when at default zoom to navigate
@@ -548,6 +558,54 @@
 
       document.addEventListener('fullscreenchange', () =>
         this._syncFullscreenState()
+      );
+
+      // Safari Trackpad Gesture (Pinch)
+      let gestureLastScale = 1;
+      this.nodes.canvas.addEventListener(
+        'gesturestart',
+        (e) => {
+          if (!this.state.open) {
+            return;
+          }
+          e.preventDefault();
+          if (this.pointers.size > 0) {
+            return;
+          }
+          gestureLastScale = 1;
+          this._isPinching = true;
+        },
+        { passive: false }
+      );
+      this.nodes.canvas.addEventListener(
+        'gesturechange',
+        (e) => {
+          if (!this.state.open) {
+            return;
+          }
+          e.preventDefault();
+          if (this.pointers.size > 0) {
+            return;
+          }
+          const delta = e.scale / gestureLastScale;
+          gestureLastScale = e.scale;
+          if (delta !== 1) {
+            // Apply moderation to the delta
+            const moderatedDelta = 1 + (delta - 1) * PINCH_MODERATION;
+            this._zoomAtPoint(moderatedDelta, e.clientX, e.clientY);
+          }
+        },
+        { passive: false }
+      );
+      this.nodes.canvas.addEventListener(
+        'gestureend',
+        () => {
+          if (this.pointers.size > 0) {
+            return;
+          }
+          this._isPinching = false;
+        },
+        { passive: false }
       );
     }
 
@@ -630,10 +688,22 @@
     }
 
     _handleWheelZoom(event) {
-      const delta = -event.deltaY;
-      const step = 1.04;
-      const factor = delta > 0 ? step : 1 / step;
-      this._zoomAtPoint(factor, event.clientX, event.clientY);
+      // If pinching via gesture, ignore wheel
+      if (this._isPinching) {
+        return;
+      }
+
+      // Trackpad pinch (ctrlKey)
+      if (event.ctrlKey) {
+        const delta = -event.deltaY;
+        // Base sensitivity for trackpad pinch (pixels to scale)
+        const TRACKPAD_BASE_SENSITIVITY = 0.01;
+        const effectiveSensitivity =
+          TRACKPAD_BASE_SENSITIVITY * PINCH_MODERATION;
+        const factor = 1 + delta * effectiveSensitivity;
+        this._zoomAtPoint(factor, event.clientX, event.clientY);
+        return;
+      }
     }
 
     _scheduleWheelGestureReset() {
@@ -789,57 +859,63 @@
     }
 
     _bindPinch() {
-      const pointers = new Map();
       let initialDistance = 0;
-      let initialScale = 1;
       const onPointerDown = (e) => {
         if (!this.state.open) {
           return;
         }
         this._handleUserActivity();
-        pointers.set(e.pointerId, e);
-        if (pointers.size === POINTERS_COUNT) {
+        this.pointers.set(e.pointerId, e);
+        if (this.pointers.size === POINTERS_COUNT) {
+          this._isPinching = true;
           // calculate distance
-          const [p1, p2] = Array.from(pointers.values());
+          const [p1, p2] = Array.from(this.pointers.values());
           initialDistance = Math.hypot(
             p2.clientX - p1.clientX,
             p2.clientY - p1.clientY
           );
-          initialScale = this.state.scale;
         }
       };
       const onPointerMove = (e) => {
-        if (!pointers.has(e.pointerId)) {
+        if (!this.pointers.has(e.pointerId)) {
           return;
         }
         if (!this.state.open) {
-          pointers.clear();
+          this.pointers.clear();
+          this._isPinching = false;
           return;
         }
         this._handleUserActivity();
-        pointers.set(e.pointerId, e);
-        if (pointers.size === POINTERS_COUNT) {
-          const [p1, p2] = Array.from(pointers.values());
+        this.pointers.set(e.pointerId, e);
+        if (this.pointers.size === POINTERS_COUNT) {
+          const [p1, p2] = Array.from(this.pointers.values());
           const currentDistance = Math.hypot(
             p2.clientX - p1.clientX,
             p2.clientY - p1.clientY
           );
           if (initialDistance > 0) {
-            const factor = currentDistance / initialDistance;
-            const moderated = 1 + (factor - 1) * PINCH_MODERATION;
-            this.state.scale = Math.min(
-              MAX_SCALE,
-              Math.max(MIN_SCALE, initialScale * moderated)
-            );
-            this._startRenderLoop();
+            const delta = currentDistance / initialDistance;
+            initialDistance = currentDistance; // Update for next frame
+
+            if (delta !== 1) {
+              const sensitivity =
+                e.pointerType === 'touch'
+                  ? PINCH_SENSITIVITY_TOUCH
+                  : PINCH_MODERATION;
+              const moderatedDelta = 1 + (delta - 1) * sensitivity;
+
+              const cx = (p1.clientX + p2.clientX) * CENTER_OFFSET;
+              const cy = (p1.clientY + p2.clientY) * CENTER_OFFSET;
+              this._zoomAtPoint(moderatedDelta, cx, cy);
+            }
           }
         }
       };
       const onPointerUp = (e) => {
-        pointers.delete(e.pointerId);
-        if (pointers.size < POINTERS_COUNT) {
+        this.pointers.delete(e.pointerId);
+        if (this.pointers.size < POINTERS_COUNT) {
+          this._isPinching = false;
           initialDistance = 0;
-          initialScale = this.state.scale;
         }
       };
       // Attach to image node
@@ -1032,6 +1108,7 @@
         return;
       }
       this._renderActive = true;
+      this._lastRenderTime = Date.now();
       this._renderLoop();
     }
 
@@ -1041,27 +1118,26 @@
         return;
       }
 
+      const now = Date.now();
+      const MAX_DT = 60;
+      const MS_PER_SEC = 1000;
+      const dt =
+        Math.min(now - (this._lastRenderTime || now), MAX_DT) / MS_PER_SEC;
+      this._lastRenderTime = now;
+
       const { scale, translateX, translateY } = this.state;
       const rs = this.renderState;
 
-      // Lerp factor - 0.15 provides a good balance of smoothness and responsiveness
-      const lerp = 0.15;
+      // Time-based lerp: 1 - exp(-decay * dt)
+      // Decay 15 is snappy, 10 is smoother
+      const decay = 15;
+      const f = 1 - Math.exp(-decay * dt);
 
-      rs.scale += (scale - rs.scale) * lerp;
-      rs.translateX += (translateX - rs.translateX) * lerp;
-      rs.translateY += (translateY - rs.translateY) * lerp;
+      rs.scale += (scale - rs.scale) * f;
+      rs.translateX += (translateX - rs.translateX) * f;
+      rs.translateY += (translateY - rs.translateY) * f;
 
-      // Check for convergence
-      if (
-        Math.abs(scale - rs.scale) < CONVERGENCE_SCALE &&
-        Math.abs(translateX - rs.translateX) < CONVERGENCE_TRANSLATE &&
-        Math.abs(translateY - rs.translateY) < CONVERGENCE_TRANSLATE
-      ) {
-        rs.scale = scale;
-        rs.translateX = translateX;
-        rs.translateY = translateY;
-        this._renderActive = false;
-      }
+      this._checkConvergence(scale, translateX, translateY, rs);
 
       // Apply
       if (this.nodes.transform) {
@@ -1083,6 +1159,19 @@
         this._rafId = requestAnimationFrame(() => this._renderLoop());
       } else {
         this._rafId = null;
+      }
+    }
+
+    _checkConvergence(scale, translateX, translateY, rs) {
+      if (
+        Math.abs(scale - rs.scale) < CONVERGENCE_SCALE &&
+        Math.abs(translateX - rs.translateX) < CONVERGENCE_TRANSLATE &&
+        Math.abs(translateY - rs.translateY) < CONVERGENCE_TRANSLATE
+      ) {
+        rs.scale = scale;
+        rs.translateX = translateX;
+        rs.translateY = translateY;
+        this._renderActive = false;
       }
     }
 
@@ -1191,6 +1280,33 @@
       this._startRenderLoop();
     }
 
+    _constrainAndSync() {
+      const { naturalWidth, naturalHeight } = this.nodes.imgNode;
+      const { clientWidth, clientHeight } = this.nodes.canvas;
+      const currentW = naturalWidth * this.state.scale;
+      const currentH = naturalHeight * this.state.scale;
+
+      // Allow moving the image until only a small fraction (e.g. 5%) is visible
+      // This prevents hard snapping when the image fits the viewport and allows
+      // the user to move the image freely to inspect corners/background.
+      const minVisibleRatio = 0.05;
+      const limitX =
+        clientWidth * CENTER_OFFSET +
+        currentW * (CENTER_OFFSET - minVisibleRatio);
+      const limitY =
+        clientHeight * CENTER_OFFSET +
+        currentH * (CENTER_OFFSET - minVisibleRatio);
+
+      this.state.translateX = Math.min(
+        limitX,
+        Math.max(-limitX, this.state.translateX)
+      );
+      this.state.translateY = Math.min(
+        limitY,
+        Math.max(-limitY, this.state.translateY)
+      );
+    }
+
     _zoomAtPoint(factor, clientX, clientY) {
       this._handleUserActivity();
       // Zoom keeping pointer anchored
@@ -1199,28 +1315,42 @@
       ).getBoundingClientRect();
       const imgCx = clientX - rect.left;
       const imgCy = clientY - rect.top;
-      const prevScale = this.state.scale;
-      const newScale = Math.min(
-        MAX_SCALE,
-        Math.max(MIN_SCALE, prevScale * factor)
-      );
-      // compute new translate so that image point under cursor stays under cursor
-      // formula: (tx,ty) in CSS translate coords (px). compute relative point ratios
-      const relX = imgCx / rect.width; // 0..1 within current rendered image
+
+      // Calculate delta based on rendered state (what user sees)
+      const relX = imgCx / rect.width;
       const relY = imgCy / rect.height;
-      // convert to image coordinate in CSS pixel space (before transform)
-      const beforeScale = prevScale;
-      const afterScale = newScale;
-      // compute offsets
-      // centerXBefore / centerYBefore removed (previously unused)
-      // Simplified approach: adjust translate by difference scaled
-      const dx =
-        (relX - CENTER_OFFSET) * rect.width * (afterScale / beforeScale - 1);
-      const dy =
-        (relY - CENTER_OFFSET) * rect.height * (afterScale / beforeScale - 1);
-      this.state.translateX -= dx;
-      this.state.translateY -= dy;
-      this.state.scale = newScale;
+
+      // Update TARGET scale
+      const prevTargetScale = this.state.scale;
+      const newTargetScale = Math.min(
+        MAX_SCALE,
+        Math.max(MIN_SCALE, prevTargetScale * factor)
+      );
+
+      // Calculate new TARGET translation
+      // We want the point (relX, relY) to be at (clientX, clientY) in the new target state.
+      // Formula: tx = clientX - ViewportCenter - Width_target * (relX - 0.5)
+      // Note: ViewportCenter is clientWidth/2, clientHeight/2
+      const { clientWidth, clientHeight } = this.nodes.canvas;
+      const { naturalWidth, naturalHeight } = this.nodes.imgNode;
+
+      const targetWidth = naturalWidth * newTargetScale;
+      const targetHeight = naturalHeight * newTargetScale;
+
+      const targetTx =
+        clientX -
+        clientWidth * CENTER_OFFSET -
+        targetWidth * (relX - CENTER_OFFSET);
+      const targetTy =
+        clientY -
+        clientHeight * CENTER_OFFSET -
+        targetHeight * (relY - CENTER_OFFSET);
+
+      this.state.translateX = targetTx;
+      this.state.translateY = targetTy;
+      this.state.scale = newTargetScale;
+
+      this._constrainAndSync();
       this._startRenderLoop();
     }
 
@@ -1330,7 +1460,7 @@
         #spot-fullscreen { display:none; }
         .spot-topbar { gap:10px; height:75px; padding 0 24px;}
         .spot-controls svg { width: 25px; height: 25px; }
-        .spot-caption {font-size:16px;}
+        .spot-caption {font-size:14px;}
         .spot-nav { display:none; }
         .spot-nav[data-dir="-1"] { left:10px; --nav-offset: -20px; }
         .spot-nav[data-dir="1"] { right:10px; --nav-offset: 20px; }
