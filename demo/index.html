@@ -7,6 +7,7 @@
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌅</text></svg>">
 
     <script src="../dist/spotlight.min.js"></script>
+    <script src="languages.js"></script>
     
     <!-- Highlight.js -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
@@ -18,7 +19,7 @@
             --primary-color: #2563eb;
             --text-color: #1f2937;
             --bg-color: #f9fafb;
-            --code-bg: #1f2937;
+            --code-bg: #282c34;
             --code-text: #e5e7eb;
         }
         body {
@@ -30,36 +31,78 @@
             padding: 0;
         }
         .container {
-            max-width: 800px;
+            max-width: 1000px;
             margin: 0 auto;
-            padding: 2rem 1rem;
+            padding: 3rem 1.5rem;
         }
         header {
             text-align: center;
-            margin-bottom: 3rem;
-            padding-bottom: 2rem;
+            margin-bottom: 4rem;
+            padding-bottom: 3rem;
             border-bottom: 1px solid #e5e7eb;
         }
         h1 {
-            font-size: 2.5rem;
-            margin-bottom: 0.5rem;
-            letter-spacing: -0.025em;
+            font-size: 3rem;
+            font-weight: 800;
+            margin-bottom: 1rem;
+            letter-spacing: -0.03em;
+            color: #111827;
+        }
+        h1 span {
+            background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
         }
         h2 {
-            margin-top: 2.5rem;
-            font-size: 1.5rem;
-            border-left: 4px solid var(--primary-color);
-            padding-left: 1rem;
+            margin-top: 3rem;
+            margin-bottom: 1.5rem;
+            font-size: 1.75rem;
+            font-weight: 700;
+            letter-spacing: -0.025em;
+            color: #111827;
         }
         p {
             margin-bottom: 1rem;
+            color: #4b5563;
         }
-        a {
-            color: var(--primary-color);
+        .hero-links {
+            display: flex;
+            justify-content: center;
+            gap: 1rem;
+            margin-top: 1.5rem;
+        }
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            padding: 0.5rem 1.25rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            font-size: 0.95rem;
+            transition: all 0.2s;
             text-decoration: none;
         }
-        a:hover {
-            text-decoration: underline;
+        .btn-primary {
+            background: var(--primary-color);
+            color: white;
+            box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.2);
+        }
+        .btn-primary:hover {
+            background: #1d4ed8;
+            transform: translateY(-1px);
+            box-shadow: 0 6px 8px -1px rgba(37, 99, 235, 0.3);
+            text-decoration: none;
+        }
+        .btn-secondary {
+            background: white;
+            color: #374151;
+            border: 1px solid #d1d5db;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        .btn-secondary:hover {
+            background: #f9fafb;
+            border-color: #9ca3af;
+            text-decoration: none;
         }
         pre {
             background: var(--code-bg);
@@ -123,24 +166,480 @@
             font-weight: 600;
             margin-bottom: 1rem;
         }
+
+        kbd {
+            background-color: #f3f4f6;
+            border: 1px solid #d1d5db;
+            border-bottom-width: 3px;
+            border-radius: 6px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+            color: #374151;
+            display: inline-block;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 0.85em;
+            font-weight: 600;
+            line-height: 1;
+            padding: 4px 8px;
+            white-space: nowrap;
+            margin: 0 2px;
+        }
+
+        .lang-switch {
+            position: absolute;
+            top: 1rem;
+            right: 1rem;
+            display: flex;
+            gap: 0.5rem;
+            z-index: 100;
+        }
+        .lang-btn {
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.375rem;
+            padding: 0.25rem 0.5rem;
+            cursor: pointer;
+            font-family: inherit;
+            font-size: 0.875rem;
+            color: #4b5563;
+            transition: all 0.2s;
+        }
+        .lang-btn:hover {
+            background: #f9fafb;
+            border-color: #d1d5db;
+        }
+        .lang-btn.active {
+            background: #dbeafe;
+            color: #1e40af;
+            border-color: #bfdbfe;
+            font-weight: 600;
+        }
+
+        /* Features Grid */
+        .features-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+            margin-top: 1.5rem;
+        }
+        .feature-card {
+            background: white;
+            padding: 1.5rem;
+            border-radius: 0.75rem;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+            border: 1px solid rgba(0,0,0,0.05);
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .feature-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        .feature-card h3 {
+            margin-top: 0;
+            font-size: 1.1rem;
+            color: var(--primary-color);
+            margin-bottom: 0.5rem;
+        }
+        .feature-card p {
+            margin-bottom: 0;
+            font-size: 0.95rem;
+            color: #4b5563;
+            line-height: 1.5;
+        }
+
+        /* Controls Grid */
+        .controls-grid {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 2rem;
+            margin-top: 1.5rem;
+        }
+        @media (min-width: 768px) {
+            .controls-grid {
+                grid-template-columns: 1fr 1fr;
+            }
+        }
+        .control-item {
+            background: white;
+            border-radius: 1rem;
+            overflow: hidden;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+            border: 1px solid rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .control-item:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+        }
+        .control-content {
+            padding: 1.5rem;
+            flex: 1;
+        }
+        .control-content h3 {
+            margin-top: 0;
+            color: var(--text-color);
+        }
+        .control-preview {
+            background: #f3f4f6;
+            height: 200px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-top: 1px solid #e5e7eb;
+            overflow: hidden;
+        }
+
+        /* Key Animation Styles */
+        .key-container {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+        }
+        .key-visual {
+            width: 64px;
+            height: 64px;
+            background: white;
+            border: 2px solid #e5e7eb;
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 24px;
+            font-weight: 600;
+            color: #4b5563;
+            box-shadow: 0 4px 0 #e5e7eb;
+            animation: keyPress 3s infinite;
+        }
+        @keyframes keyPress {
+            0%, 45% { transform: translateY(0); box-shadow: 0 4px 0 #e5e7eb; }
+            50%, 90% { transform: translateY(4px); box-shadow: 0 0 0 #e5e7eb; }
+            100% { transform: translateY(0); box-shadow: 0 4px 0 #e5e7eb; }
+        }
+
+        /* Trackpad Animation Styles */
+        .trackpad-container {
+            transform: scale(0.6);
+        }
+        .trackpad {
+            width: 400px;
+            height: 250px;
+            background: #ffffff;
+            border-radius: 20px;
+            border: 2px solid #ccc;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+        }
+        .finger {
+            width: 32px;
+            height: 32px;
+            background: #007AFF;
+            box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4);
+            border-radius: 50%;
+            position: absolute;
+        }
+
+        /* Animations */
+                .finger.swipe-down {
+            left: 50%;
+            transform: translateX(-50%);
+            animation: swipeDown 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+
+        /* Language Modal */
+        @keyframes modalFadeIn {
+            from { opacity: 0; transform: scale(0.95) translateY(-10px); }
+            to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        @keyframes modalFadeOut {
+            from { opacity: 1; transform: scale(1) translateY(0); }
+            to { opacity: 0; transform: scale(0.95) translateY(-10px); }
+        }
+        @keyframes backdropFadeIn {
+            from { opacity: 0; backdrop-filter: blur(0px); }
+            to { opacity: 1; backdrop-filter: blur(4px); }
+        }
+        @keyframes backdropFadeOut {
+            from { opacity: 1; backdrop-filter: blur(4px); }
+            to { opacity: 0; backdrop-filter: blur(0px); }
+        }
+
+        .lang-modal {
+            border: none;
+            border-radius: 1rem;
+            padding: 0;
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+            max-width: 600px;
+            width: 90%;
+            background: white;
+            animation: modalFadeIn 0.2s ease-out;
+            transition: height 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            overflow: hidden;
+            box-sizing: border-box;
+        }
+        .lang-modal * {
+            box-sizing: border-box;
+        }
+        .lang-modal::backdrop {
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+            animation: backdropFadeIn 0.3s ease-out forwards;
+        }
+        .lang-modal.closing {
+            animation: modalFadeOut 0.2s ease-in forwards;
+        }
+        .lang-modal.closing::backdrop {
+            animation: backdropFadeOut 0.2s ease-in forwards;
+        }
+        .lang-modal::backdrop {
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+        .lang-modal-content {
+            padding: 1.5rem;
+        }
+        .lang-modal-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+        .lang-modal-header h2 {
+            margin: 0;
+            font-size: 1.25rem;
+        }
+        .close-modal {
+            background: none;
+            border: none;
+            font-size: 1.5rem;
+            cursor: pointer;
+            color: #6b7280;
+        }
+        #lang-search {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.5rem;
+            margin-bottom: 1rem;
+            font-size: 1rem;
+            box-sizing: border-box;
+        }
+        .lang-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+            gap: 0.75rem;
+            max-height: 60vh;
+            overflow-y: auto;
+            padding: 4px;
+        }
+        .lang-option {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 1rem;
+            border: 1px solid #e5e7eb;
+            border-radius: 0.5rem;
+            cursor: pointer;
+            transition: transform 0.2s, background-color 0.2s, border-color 0.2s, box-shadow 0.2s;
+            text-align: center;
+        }
+        .lang-option:hover {
+            background: #f3f4f6;
+            border-color: var(--primary-color);
+            transform: translateY(-2px);
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+        .lang-option.active {
+            background: #eff6ff;
+            border-color: var(--primary-color);
+            color: var(--primary-color);
+        }
+        .lang-flag {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        .lang-name {
+            font-weight: 600;
+            font-size: 0.9rem;
+        }
+        .lang-native {
+            font-size: 0.8rem;
+            color: #6b7280;
+        }
+        .lang-btn {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background: white;
+            border: 1px solid #e5e7eb;
+            border-radius: 2rem;
+            cursor: pointer;
+            font-weight: 600;
+            color: var(--text-color);
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+            transition: all 0.2s;
+        }
+        .lang-btn:hover {
+            background: #f9fafb;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        }
+
+        .finger.swipe-down.left { margin-left: -24px; }
+        .finger.swipe-down.right { margin-left: 24px; }
+
+        .finger.swipe-left {
+            top: 50%;
+            transform: translateY(-50%);
+            animation: swipeLeft 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+        .finger.swipe-left.left { margin-left: -24px; }
+        .finger.swipe-left.right { margin-left: 24px; }
+
+        .finger.swipe-right {
+            top: 50%;
+            transform: translateY(-50%);
+            animation: swipeRight 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+        .finger.swipe-right.left { margin-left: -24px; }
+        .finger.swipe-right.right { margin-left: 24px; }
+
+        .finger.pinch-zoom {
+            top: 50%;
+            left: 50%;
+        }
+        .finger.pinch-zoom.left {
+            margin-left: 0;
+            animation: pinchZoomLeft 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+        .finger.pinch-zoom.right {
+            margin-left: 0;
+            animation: pinchZoomRight 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+
+        .finger.pinch-zoom-out {
+            top: 50%;
+            left: 50%;
+        }
+        .finger.pinch-zoom-out.left {
+            margin-left: 0;
+            animation: pinchZoomOutLeft 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+        .finger.pinch-zoom-out.right {
+            margin-left: 0;
+            animation: pinchZoomOutRight 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+        }
+
+        @keyframes swipeDown {
+            0% { top: 40px; opacity: 0; transform: translateX(-50%) scale(0.8); }
+            10% { opacity: 1; transform: translateX(-50%) scale(1); }
+            60% { top: 180px; opacity: 1; transform: translateX(-50%) scale(1); box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); }
+            75% { top: 180px; opacity: 0; transform: translateX(-50%) scale(1.5); box-shadow: 0 0 0 20px rgba(0, 122, 255, 0); }
+            100% { top: 180px; opacity: 0; }
+        }
+
+        @keyframes swipeLeft {
+            0% { left: 80%; opacity: 0; transform: translateY(-50%) scale(0.8); }
+            10% { opacity: 1; transform: translateY(-50%) scale(1); }
+            60% { left: 30%; opacity: 1; transform: translateY(-50%) scale(1); box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); }
+            75% { left: 30%; opacity: 0; transform: translateY(-50%) scale(1.5); box-shadow: 0 0 0 20px rgba(0, 122, 255, 0); }
+            100% { left: 30%; opacity: 0; }
+        }
+
+        @keyframes swipeRight {
+            0% { left: 20%; opacity: 0; transform: translateY(-50%) scale(0.8); }
+            10% { opacity: 1; transform: translateY(-50%) scale(1); }
+            60% { left: 70%; opacity: 1; transform: translateY(-50%) scale(1); box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); }
+            75% { left: 70%; opacity: 0; transform: translateY(-50%) scale(1.5); box-shadow: 0 0 0 20px rgba(0, 122, 255, 0); }
+            100% { left: 70%; opacity: 0; }
+        }
+
+        @keyframes pinchZoomLeft {
+            0% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(-24px) scale(0.8); }
+            10% { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) translateX(-24px) scale(1); }
+            60% { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) translateX(-60px) scale(1); box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); }
+            75% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(-60px) scale(1.5); box-shadow: 0 0 0 20px rgba(0, 122, 255, 0); }
+            100% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(-60px) scale(1); }
+        }
+
+        @keyframes pinchZoomRight {
+            0% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(24px) scale(0.8); }
+            10% { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) translateX(24px) scale(1); }
+            60% { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) translateX(60px) scale(1); box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); }
+            75% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(60px) scale(1.5); box-shadow: 0 0 0 20px rgba(0, 122, 255, 0); }
+            100% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(60px) scale(1); }
+        }
+
+        @keyframes pinchZoomOutLeft {
+            0% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(-60px) scale(0.8); }
+            10% { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) translateX(-60px) scale(1); }
+            60% { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) translateX(-24px) scale(1); box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); }
+            75% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(-24px) scale(1.5); box-shadow: 0 0 0 20px rgba(0, 122, 255, 0); }
+            100% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(-24px) scale(1); }
+        }
+
+        @keyframes pinchZoomOutRight {
+            0% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(60px) scale(0.8); }
+            10% { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) translateX(60px) scale(1); }
+            60% { opacity: 1; transform: translate(-50%, -50%) rotate(45deg) translateX(24px) scale(1); box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); }
+            75% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(24px) scale(1.5); box-shadow: 0 0 0 20px rgba(0, 122, 255, 0); }
+            100% { opacity: 0; transform: translate(-50%, -50%) rotate(45deg) translateX(24px) scale(1); }
+        }
+
+        /* Force LTR for Spotlight overlay */
+        #spot-overlay {
+            direction: ltr;
+        }
     </style>
 </head>
 <body>
+    <div class="lang-switch">
+        <button class="lang-btn" onclick="openLanguageModal()" aria-label="Change Language">
+            <span class="lang-icon">🌐</span> <span class="current-lang-code">EN</span>
+        </button>
+    </div>
+
+    <dialog id="lang-modal" class="lang-modal">
+        <div class="lang-modal-content">
+            <div class="lang-modal-header">
+                <h2 data-i18n="select_language">Select Language</h2>
+                <button class="close-modal" onclick="closeLanguageModal()">✕</button>
+            </div>
+            <input type="text" id="lang-search" placeholder="Search language..." oninput="filterLanguages()">
+            <div class="lang-grid" id="lang-grid">
+                <!-- Generated by JS -->
+            </div>
+        </div>
+    </dialog>
     <div class="container">
         <header>
             <span class="badge">v1.0.1</span>
-            <h1>🌅 Spotlight JS</h1>
-            <p>A lightweight, dependency-free lightbox gallery for modern websites.</p>
-            <p>
-                <a href="https://github.com/jarpex/spotlight-js">View on GitHub</a> &middot;
-                <a href="#examples">View Examples</a> &middot;
-                <a href="https://github.com/jarpex/spotlight-js/issues">Report Issues</a>
-            </p>
+            <br>
+            <h1>🌅 <span>Spotlight JS</span></h1>
+            <p data-i18n="subtitle" style="font-size: 1.25rem; max-width: 600px; margin: 0 auto 1.5rem auto;">The lightweight, dependency-free lightbox gallery built for the modern web.</p>
+            
+            <div class="hero-links">
+                <a href="https://github.com/jarpex/spotlight-js" class="btn btn-primary" data-i18n="github">View on GitHub</a>
+                <a href="#examples" class="btn btn-secondary" data-i18n="examples">View Examples</a>
+                <a href="https://github.com/jarpex/spotlight-js/issues" class="btn btn-secondary" data-i18n="issues">Report Issues</a>
+            </div>
         </header>
 
+        <section>
+            <h2 data-i18n="getting_started">Getting Started</h2>
+            <p data-i18n="getting_started_text">Get started in seconds. Just add the script to your page:</p>
+<pre><code class="language-html">&lt;script src="path/to/spotlight.min.js"&gt;&lt;/script&gt;</code></pre>
+            <p data-i18n="getting_started_done">That's it! Spotlight automatically initializes and instantly enhances your images.</p>
+        </section>
+
         <section id="examples">
-            <h2>Gallery Mode</h2>
-            <p>Simply wrap your images in a container with the <code>.gallery</code> class. Spotlight will automatically group them into a collection.</p>
+            <h2 data-i18n="gallery_mode">Gallery Mode</h2>
+            <p data-i18n="gallery_text">Effortless galleries. Just wrap your images in a container with the <code>.gallery</code> class, and Spotlight will automatically group them into a seamless collection.</p>
             
             <div class="gallery gallery-grid">
                 <img src="1.webp" alt="Fly agaric mushrooms">
@@ -154,8 +653,8 @@
     &lt;img src="3.webp" alt="Crabapple blossoms"&gt;
 &lt;/div&gt;</code></pre>
 
-            <h2>Article Mode</h2>
-            <p>Spotlight automatically detects images inside <code>&lt;article&gt;</code> tags. It handles captions from <code>figcaption</code> or <code>alt</code> attributes intelligently.</p>
+            <h2 data-i18n="article_mode">Article Mode</h2>
+            <p data-i18n="article_text">Perfect for content. Spotlight automatically detects images inside <code>&lt;article&gt;</code> tags, intelligently pairing them with captions from <code>figcaption</code> or <code>alt</code> attributes.</p>
 
             <article>
                 <h3>Moscow Landmarks</h3>
@@ -182,10 +681,305 @@
     &lt;/figure&gt;
 &lt;/article&gt;</code></pre>
         </section>
+
+        <section>
+            <h2 data-i18n="features">Features</h2>
+            <div class="features-grid">
+                <div class="feature-card">
+                    <h3 data-i18n="feat_grouping_title">Smart Grouping</h3>
+                    <p data-i18n="feat_grouping_text">Auto-magically groups images in galleries and articles. No configuration required.</p>
+                </div>
+                <div class="feature-card">
+                    <h3 data-i18n="feat_captions_title">Captions Support</h3>
+                    <p data-i18n="feat_captions_text">Automatically displays captions from <code>figcaption</code> or <code>alt</code> attributes.</p>
+                </div>
+                <div class="feature-card">
+                    <h3 data-i18n="feat_animations_title">Smooth Animations</h3>
+                    <p data-i18n="feat_animations_text">Butter-smooth, hardware-accelerated transitions that feel native on every device.</p>
+                </div>
+                <div class="feature-card">
+                    <h3 data-i18n="feat_input_title">Multi-Input</h3>
+                    <p data-i18n="feat_input_text">Navigate your way. Full support for Keyboard, Trackpad, and Touch gestures.</p>
+                </div>
+                <div class="feature-card">
+                    <h3 data-i18n="feat_deps_title">Zero Dependencies</h3>
+                    <p data-i18n="feat_deps_text">Ultra-lightweight and bloat-free. No jQuery or external libraries needed.</p>
+                </div>
+                <div class="feature-card">
+                    <h3 data-i18n="feat_a11y_title">Accessibility</h3>
+                    <p data-i18n="feat_a11y_text">Inclusive by design. Built with semantic HTML and full keyboard navigation support.</p>
+                </div>
+            </div>
+        </section>
+
+        <section>
+            <h2 data-i18n="controls">Controls</h2>
+            <p data-i18n="controls_text">Experience total control. Navigate intuitively with keyboard shortcuts, trackpad gestures, or touch.</p>
+            
+            <div class="controls-grid">
+                <!-- Previous Image -->
+                <div class="control-item">
+                    <div class="control-content">
+                        <h3 data-i18n="ctrl_prev">Previous Image</h3>
+                        <p><strong data-i18n="lbl_keyboard">Keyboard:</strong> <kbd data-i18n="act_arrow_left">Arrow Left</kbd> / <kbd>H</kbd></p>
+                        <p><strong data-i18n="lbl_mouse">Mouse:</strong> <span data-i18n="act_left_arrow_btn">Left arrow button</span></p>
+                        <p><strong data-i18n="lbl_touch">Touch:</strong> <span data-i18n="act_swipe_right">Swipe Right</span></p>
+                        <p><strong data-i18n="lbl_trackpad">Trackpad:</strong> <span data-i18n="act_2_swipe_left">Two fingers swipe left</span></p>
+                    </div>
+                    <div class="control-preview">
+                        <div class="trackpad-container">
+                            <div class="trackpad">
+                                <div class="finger swipe-left left"></div>
+                                <div class="finger swipe-left right"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Next Image -->
+                <div class="control-item">
+                    <div class="control-content">
+                        <h3 data-i18n="ctrl_next">Next Image</h3>
+                        <p><strong data-i18n="lbl_keyboard">Keyboard:</strong> <kbd data-i18n="act_arrow_right">Arrow Right</kbd> / <kbd>L</kbd></p>
+                        <p><strong data-i18n="lbl_mouse">Mouse:</strong> <span data-i18n="act_right_arrow_btn">Right arrow button</span></p>
+                        <p><strong data-i18n="lbl_touch">Touch:</strong> <span data-i18n="act_swipe_left">Swipe Left</span></p>
+                        <p><strong data-i18n="lbl_trackpad">Trackpad:</strong> <span data-i18n="act_2_swipe_right">Two fingers swipe right</span></p>
+                    </div>
+                    <div class="control-preview">
+                        <div class="trackpad-container">
+                            <div class="trackpad">
+                                <div class="finger swipe-right left"></div>
+                                <div class="finger swipe-right right"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Zoom In -->
+                <div class="control-item">
+                    <div class="control-content">
+                        <h3 data-i18n="ctrl_zoom_in">Zoom In</h3>
+                        <p><strong data-i18n="lbl_keyboard">Keyboard:</strong> <kbd>+</kbd> / <kbd>=</kbd></p>
+                        <p><strong data-i18n="lbl_mouse">Mouse:</strong> <span data-i18n="act_zoom_in_btn">Zoom in button</span> / <kbd>Ctrl</kbd> + <span data-i18n="act_scroll_up">Scroll Up</span></p>
+                        <p><strong data-i18n="lbl_touch">Touch:</strong> <span data-i18n="act_pinch_out">Pinch Out</span></p>
+                    </div>
+                    <div class="control-preview">
+                        <div class="trackpad-container">
+                            <div class="trackpad">
+                                <div class="finger pinch-zoom left"></div>
+                                <div class="finger pinch-zoom right"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Zoom Out -->
+                <div class="control-item">
+                    <div class="control-content">
+                        <h3 data-i18n="ctrl_zoom_out">Zoom Out</h3>
+                        <p><strong data-i18n="lbl_keyboard">Keyboard:</strong> <kbd>-</kbd> / <kbd>_</kbd></p>
+                        <p><strong data-i18n="lbl_mouse">Mouse:</strong> <span data-i18n="act_zoom_out_btn">Zoom out button</span> / <kbd>Ctrl</kbd> + <span data-i18n="act_scroll_down">Scroll Down</span></p>
+                        <p><strong data-i18n="lbl_touch">Touch:</strong> <span data-i18n="act_pinch_in">Pinch In</span></p>
+                    </div>
+                    <div class="control-preview">
+                        <div class="trackpad-container">
+                            <div class="trackpad">
+                                <div class="finger pinch-zoom-out left"></div>
+                                <div class="finger pinch-zoom-out right"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Fullscreen -->
+                <div class="control-item">
+                    <div class="control-content">
+                        <h3 data-i18n="ctrl_fullscreen">Toggle Fullscreen</h3>
+                        <p><strong data-i18n="lbl_keyboard">Keyboard:</strong> <kbd>F</kbd></p>
+                        <p><strong data-i18n="lbl_mouse">Mouse:</strong> <span data-i18n="act_fullscreen_btn">Fullscreen button</span></p>
+                        <p style="color: #9ca3af; font-style: italic;" data-i18n="act_no_gesture">(No gesture available)</p>
+                    </div>
+                    <div class="control-preview">
+                        <div class="key-container">
+                            <div class="key-visual">F</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Close -->
+                <div class="control-item">
+                    <div class="control-content">
+                        <h3 data-i18n="ctrl_close">Close Spotlight</h3>
+                        <p><strong data-i18n="lbl_keyboard">Keyboard:</strong> <kbd data-i18n="act_escape">Escape</kbd></p>
+                        <p><strong data-i18n="lbl_mouse">Mouse:</strong> <span data-i18n="act_cross_btn">Cross button</span></p>
+                        <p><strong data-i18n="lbl_touch">Touch:</strong> <span data-i18n="act_swipe_down">Swipe Down</span></p>
+                        <p><strong data-i18n="lbl_trackpad">Trackpad:</strong> <span data-i18n="act_2_swipe_down">Two fingers swipe down</span></p>
+                    </div>
+                    <div class="control-preview">
+                        <div class="trackpad-container">
+                            <div class="trackpad">
+                                <div class="finger swipe-down left"></div>
+                                <div class="finger swipe-down right"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
         
         <footer style="text-align: center; margin-top: 4rem; color: #6b7280; font-size: 0.875rem;">
-            <p>&copy; 2025 Anastasia Shebalkina. Licensed under MIT.</p>
+            <p data-i18n="footer">&copy; 2025 Anastasia Shebalkina. Licensed under MIT.</p>
         </footer>
     </div>
+
+    <script>
+        // Modal Logic
+        const modal = document.getElementById('lang-modal');
+        const searchInput = document.getElementById('lang-search');
+        const grid = document.getElementById('lang-grid');
+
+        function openLanguageModal() {
+            renderLanguages();
+            modal.showModal();
+            document.body.style.overflow = 'hidden'; // Lock scroll
+            searchInput.focus();
+        }
+
+        function closeLanguageModal() {
+            modal.classList.add('closing');
+            modal.addEventListener('animationend', () => {
+                modal.close();
+                modal.classList.remove('closing');
+                document.body.style.overflow = ''; // Unlock scroll
+                modal.style.height = ''; // Reset height
+                searchInput.value = ''; // Clear search
+                grid.scrollTop = 0; // Reset scroll position
+            }, { once: true });
+        }
+
+        // Handle Escape key
+        modal.addEventListener('cancel', (e) => {
+            e.preventDefault();
+            closeLanguageModal();
+        });
+
+        // Close on backdrop click
+        modal.addEventListener('click', (e) => {
+            const rect = modal.getBoundingClientRect();
+            if (e.clientX < rect.left || e.clientX > rect.right || 
+                e.clientY < rect.top || e.clientY > rect.bottom) {
+                closeLanguageModal();
+            }
+        });
+
+        function renderLanguages(filter = '') {
+            // Capture start height before changing content
+            const startHeight = modal.offsetHeight;
+            if (startHeight) {
+                modal.style.height = startHeight + 'px';
+            }
+
+            grid.innerHTML = '';
+            const currentLang = localStorage.getItem('spotlight-lang') || 'en';
+            
+            const filtered = AVAILABLE_LANGUAGES.filter(lang => {
+                const term = filter.toLowerCase();
+                return lang.name.toLowerCase().includes(term) || 
+                       lang.native.toLowerCase().includes(term) ||
+                       lang.code.toLowerCase().includes(term);
+            });
+
+            // Sort current language to top
+            filtered.sort((a, b) => {
+                if (a.code === currentLang) return -1;
+                if (b.code === currentLang) return 1;
+                return 0;
+            });
+
+            if (filtered.length === 0) {
+                grid.innerHTML = '<div style="grid-column: 1/-1; text-align: center; padding: 2rem; color: #6b7280;">No languages found</div>';
+            } else {
+                filtered.forEach(lang => {
+                    const div = document.createElement('div');
+                    div.className = `lang-option ${lang.code === currentLang ? 'active' : ''}`;
+                    div.onclick = () => {
+                        setLanguage(lang.code);
+                        closeLanguageModal();
+                    };
+                    div.innerHTML = `
+                        <div class="lang-flag">${lang.flag}</div>
+                        <div class="lang-name">${lang.name}</div>
+                        <div class="lang-native">${lang.native}</div>
+                    `;
+                    grid.appendChild(div);
+                });
+            }
+
+            // Animate height
+            if (modal.open) {
+                requestAnimationFrame(() => {
+                    modal.style.transition = 'none';
+                    modal.style.height = 'auto';
+                    
+                    const content = modal.querySelector('.lang-modal-content');
+                    const newHeight = content.getBoundingClientRect().height;
+                    
+                    modal.style.height = startHeight + 'px';
+                    modal.offsetHeight; // Force reflow
+                    
+                    modal.style.transition = '';
+
+                    requestAnimationFrame(() => {
+                        modal.style.height = newHeight + 'px';
+                        
+                        const onTransitionEnd = () => {
+                            // Keep the calculated height instead of resetting to auto
+                            // This prevents the dialog from expanding to fill available space
+                            modal.style.height = 'fit-content'; 
+                            modal.removeEventListener('transitionend', onTransitionEnd);
+                        };
+                        modal.addEventListener('transitionend', onTransitionEnd);
+                    });
+                });
+            }
+        }
+
+        function filterLanguages() {
+            renderLanguages(searchInput.value);
+        }
+
+        function setLanguage(lang) {
+            // Update button text and icon
+            const langObj = AVAILABLE_LANGUAGES.find(l => l.code === lang) || AVAILABLE_LANGUAGES[0];
+            document.querySelector('.current-lang-code').textContent = langObj.code.toUpperCase();
+            document.querySelector('.lang-icon').textContent = langObj.flag;
+
+            // Handle RTL
+            const rtlLangs = ['ar', 'arz', 'he', 'fa', 'ur'];
+            document.documentElement.dir = rtlLangs.includes(lang) ? 'rtl' : 'ltr';
+
+            // Update text content
+            document.querySelectorAll('[data-i18n]').forEach(el => {
+                const key = el.getAttribute('data-i18n');
+                if (TRANSLATIONS[lang] && TRANSLATIONS[lang][key]) {
+                    el.innerHTML = TRANSLATIONS[lang][key];
+                } else if (TRANSLATIONS['en'][key]) {
+                    el.innerHTML = TRANSLATIONS['en'][key]; // Fallback
+                }
+            });
+
+            // Save preference
+            localStorage.setItem('spotlight-lang', lang);
+            document.documentElement.lang = lang;
+        }
+
+        // Initialize
+        const savedLang = localStorage.getItem('spotlight-lang');
+        // Try to match browser language to one of our codes
+        const browserLang = navigator.language.split('-')[0];
+        const initialLang = savedLang || (AVAILABLE_LANGUAGES.find(l => l.code === browserLang) ? browserLang : 'en');
+        
+        setLanguage(initialLang);
+    </script>
 </body>
 </html>
