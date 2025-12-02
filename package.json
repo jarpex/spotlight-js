@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "build": "vite build",
+    "build:safe": "vite build -c vite.config.safe.js",
     "lint": "eslint src --ext .js",
     "format": "prettier --write ."
   },
