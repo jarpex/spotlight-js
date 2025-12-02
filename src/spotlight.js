@@ -43,13 +43,19 @@
   // Wheel Interaction
   const WHEEL_SCALE_THRESHOLD_NEAR = 0.8; // Threshold for "near base scale" check
   const WHEEL_SCALE_THRESHOLD_FACTOR = 0.5; // Factor of base scale for threshold
-  const WHEEL_SWIPE_EASING = 1.5; // Threshold for easing out of wheel swipe
   const SWIPE_DEBOUNCE = 500; // Debounce time for rapid swipes (ms)
   const WHEEL_RATIO_THRESHOLD = 0.65; // Ratio of X to Y delta for horizontal swipe detection
   const WHEEL_Y_THRESHOLD = 10; // Max Y delta for horizontal swipe detection
   const WHEEL_RESET_DELAY = 80; // Delay to reset wheel gesture state (ms)
   const MOUSE_WHEEL_NAV_DEBOUNCE = 300; // Debounce time for mouse wheel navigation (ms)
   const MOUSE_WHEEL_NAV_THRESHOLD = 2; // Minimum deltaY to trigger mouse wheel navigation
+  const WHEEL_ACCELERATION_THRESHOLD = 5; // Threshold for wheel acceleration detection
+  const UNLOCK_WHEEL_GAP = 150; // Time gap to unlock wheel mode
+
+  // Input & Calibration
+  const INPUT_DETECTION_DELAY = 400; // Delay for input detection (ms)
+  const CALIBRATION_COOLDOWN = 800; // Cooldown after calibration (ms)
+  const CALIBRATION_CLOSE_DELAY = 300; // Delay to close calibration (ms)
 
   // Animation & UI
   const SLIDE_OFFSET = 60; // Pixel offset for slide animation
@@ -133,13 +139,11 @@
       // Input modality detection
       this._lastTouchTime = 0;
       this._wheelSource = null;
-      this._wheelSourceReset = null;
-      this._lastWheelSampleTime = 0;
       this._hasTrackpad =
         document.body?.classList.contains('using-trackpad') || false;
 
       // Trackpad Inversion
-      const storedNatural = localStorage.getItem(LS_KEY_NATURAL);
+      const storedNatural = window.localStorage.getItem(LS_KEY_NATURAL);
       this.invertedScroll = storedNatural === 'true';
       this.calibrationActive = false;
       this.needsCalibration = storedNatural === null;
@@ -178,20 +182,8 @@
       window.addEventListener(
         'touchstart',
         () => {
-          this._lastTouchTime = performance.now();
+          this._lastTouchTime = window.performance.now();
           this._setInputMode('touch');
-        },
-        { passive: true }
-      );
-
-      window.addEventListener(
-        'wheel',
-        (e) => {
-          const now = performance.now();
-          if (now - (this._lastTouchTime || 0) < 400) {
-            return;
-          }
-          this._determineWheelSource(e);
         },
         { passive: true }
       );
@@ -203,8 +195,8 @@
       }
 
       // Guard against synthetic events fired while touching the screen.
-      const now = performance.now();
-      if (now - (this._lastTouchTime || 0) < 400) {
+      const now = window.performance.now();
+      if (now - (this._lastTouchTime || 0) < INPUT_DETECTION_DELAY) {
         return this._wheelSource || 'mouse';
       }
 
@@ -337,7 +329,8 @@
       const animContainer = create('div', { class: 'trackpad-container' });
       animContainer.innerHTML = `
         <div class="trackpad">
-            <div class="finger swipe-down"></div>
+            <div class="finger swipe-down" style="margin-left: -22px;"></div>
+            <div class="finger swipe-down" style="margin-left: 22px;"></div>
         </div>
       `;
 
@@ -375,7 +368,7 @@
       // Startup delay - ignore input for first 400ms after calibration appears
       if (
         this.calibrationStartTime &&
-        Date.now() - this.calibrationStartTime < 400
+        Date.now() - this.calibrationStartTime < INPUT_DETECTION_DELAY
       ) {
         e.preventDefault();
         e.stopPropagation();
@@ -397,7 +390,7 @@
       const progress = Math.min(Math.abs(this.calibrationAccum) / TARGET, 1);
 
       if (this.nodes.calibrationProgress) {
-        this.nodes.calibrationProgress.style.width = `${progress * 100}%`;
+        this.nodes.calibrationProgress.style.width = `${progress * PERCENTAGE}%`;
       }
 
       if (progress >= 1) {
@@ -421,11 +414,11 @@
         const isNatural = this.calibrationAccum < 0;
 
         this.invertedScroll = isNatural;
-        localStorage.setItem(LS_KEY_NATURAL, String(isNatural));
+        window.localStorage.setItem(LS_KEY_NATURAL, String(isNatural));
         this.needsCalibration = false;
 
         // Set cooldown to prevent immediate gesture triggering (e.g. swipe-to-close)
-        this.calibrationCooldown = Date.now() + 800;
+        this.calibrationCooldown = Date.now() + CALIBRATION_COOLDOWN;
 
         // Close calibration
         this.nodes.calibration.classList.remove('visible');
@@ -438,66 +431,65 @@
           }
           this.calibrationActive = false;
           this.calibrationSource = null;
-        }, 300);
+        }, CALIBRATION_CLOSE_DELAY);
       }
     }
 
     // Scan <article> and .gallery for images
     _scanCollections() {
-      const containers = [];
-      // Each <article> becomes a collection if it contains images
-      $$('article').forEach((a) => {
-        const imgs = $$('img', a);
-        if (imgs.length) {
-          containers.push({ type: 'article', el: a, imgs });
+      this.collections = [];
+      const map = new Map(); // container -> items[]
+
+      // Find all images that are inside an article or .gallery
+      const images = $$('img');
+
+      images.forEach((img) => {
+        const container = img.closest('article, .gallery');
+        if (!container) {
+          return;
         }
-      });
-      // Each .gallery becomes a collection (even if also inside article) - but avoid duplicates by element identity
-      $$('.gallery').forEach((g) => {
-        if (!containers.some((c) => c.el === g)) {
-          const imgs = $$('img', g);
-          containers.push({ type: 'gallery', el: g, imgs });
-        } else {
-          // merge gallery if same element? skip
+
+        if (!map.has(container)) {
+          map.set(container, []);
         }
+
+        // Try to get canonical src:
+        const src =
+          img.dataset.src || img.getAttribute('src') || img.currentSrc || null;
+        if (!src) {
+          return;
+        }
+        const figure = img.closest('figure');
+        const captionEl = figure ? figure.querySelector('figcaption') : null;
+        const captionText = captionEl
+          ? captionEl.textContent.trim()
+          : (
+              img.getAttribute('data-caption') ||
+              img.getAttribute('alt') ||
+              ''
+            ).trim();
+
+        map.get(container).push({ src, el: img, caption: captionText });
       });
 
-      // For each container, create collection with srcs
-      containers.forEach((c, ci) => {
-        const items = [];
-        c.imgs.forEach((imgEl, idx) => {
-          // Try to get canonical src:
-          const src =
-            imgEl.dataset.src ||
-            imgEl.getAttribute('src') ||
-            imgEl.currentSrc ||
-            null;
-          if (!src) {
-            return;
-          }
-          const figure = imgEl.closest('figure');
-          const captionEl = figure ? figure.querySelector('figcaption') : null;
-          const captionText = captionEl
-            ? captionEl.textContent.trim()
-            : (
-                imgEl.getAttribute('data-caption') ||
-                imgEl.getAttribute('alt') ||
-                ''
-              ).trim();
-          items.push({ src, el: imgEl, caption: captionText });
-          // assign dataset values for collection and index
-          imgEl.dataset.spotlightCollection = String(this.collections.length);
-          imgEl.dataset.spotlightIndex = String(items.length - 1);
-          imgEl.style.cursor = 'zoom-in';
+      // Create collections
+      map.forEach((items, container) => {
+        if (!items.length) {
+          return;
+        }
+        const collectionIndex = this.collections.length;
+        this.collections.push({
+          id: `spot-${this._randId()}`,
+          container,
+          items,
         });
 
-        if (items.length) {
-          this.collections.push({
-            id: `spot-${this._randId()}`,
-            container: c.el,
-            items,
-          });
-        }
+        // Update image datasets
+        items.forEach((item, idx) => {
+          item.el.dataset.spotlightCollection = String(collectionIndex);
+          item.el.dataset.spotlightIndex = String(idx);
+          item.el.style.cursor = 'zoom-in';
+        });
       });
     }
 
@@ -735,97 +727,13 @@
       window.addEventListener('keydown', (e) => this._handleKeydown(e));
 
       // Wheel to zoom (if pointer over image)
-      const wheelHandler = (e) => {
-        if (!this.state.open) {
-          return;
+      this.nodes.canvas.addEventListener(
+        'wheel',
+        (e) => this._handleWheelEvent(e),
+        {
+          passive: false,
         }
-
-        const source = this._determineWheelSource(e);
-        const isTrackpad = source === 'trackpad';
-
-        if (this.calibrationActive) {
-          if (isTrackpad) {
-            this._handleCalibrationWheel(e);
-          }
-          return;
-        }
-
-        // Ignore events during cooldown (e.g. inertia after calibration)
-        if (this.calibrationCooldown && Date.now() < this.calibrationCooldown) {
-          return;
-        }
-
-        // Mouse wheel handling: ctrl+wheel = zoom, plain wheel = navigate images
-        if (!isTrackpad) {
-          e.preventDefault();
-          this._handleUserActivity();
-          if (e.ctrlKey) {
-            // Ctrl+wheel = zoom
-            this._handleWheelZoom(e, false);
-          } else {
-            // Plain mouse wheel = navigate images
-            this._handleMouseWheelNavigation(e.deltaY);
-          }
-          return;
-        }
-
-        if (isTrackpad && this.needsCalibration && !this.calibrationActive) {
-          e.preventDefault();
-          this._showCalibration('trackpad');
-          return;
-        }
-
-        const now = Date.now();
-        const timeSinceLastNav = now - (this._lastSwipeNavTime || 0);
-        const timeSinceLastWheel = now - (this._lastWheelEventTime || 0);
-
-        // Debug logging for all wheel events
-        console.log(
-          `[wheel] t=${now} dX=${e.deltaX.toFixed(1)} dY=${e.deltaY.toFixed(1)} mode=${this._wheelMode} locked=${this._swipeModeLocked} sinceNav=${timeSinceLastNav}ms sinceWheel=${timeSinceLastWheel}ms accum=${this._wheelSwipeAccum}`
-        );
-
-        // If mode was locked after a swipe navigation, only reset when:
-        // 1. Debounce period has passed (500ms since last nav), AND
-        // 2. Either there's been a significant pause in wheel events (>150ms)
-        //    OR we detect a new gesture start (acceleration in deltaX)
-        // This prevents unlocking during continuous fast swiping with brief gaps,
-        // but allows rapid intentional swipes.
-        if (this._swipeModeLocked) {
-          const UNLOCK_WHEEL_GAP = 150; // Require 150ms pause to unlock
-          const absDeltaX = Math.abs(e.deltaX);
-          // Check for significant acceleration (new swipe start)
-          // We use a threshold of 5 to filter out noise/minor fluctuations in inertia
-          const isAcceleration = absDeltaX > (this._lastWheelDeltaX || 0) + 5;
-
-          if (
-            timeSinceLastNav >= SWIPE_DEBOUNCE &&
-            (timeSinceLastWheel > UNLOCK_WHEEL_GAP || isAcceleration)
-          ) {
-            console.log(
-              `[wheel] UNLOCK: debounce passed and (pause detected ${timeSinceLastWheel}ms or acceleration)`
-            );
-            this._swipeModeLocked = false;
-            this._wheelMode = null;
-            this._wheelSwipeAccum = 0;
-          }
-        }
-        this._lastWheelEventTime = now;
-        this._lastWheelDeltaX = Math.abs(e.deltaX);
-
-        this._handleUserActivity();
-        const mode = isTrackpad ? this._detectWheelMode(e) : 'zoom';
-        e.preventDefault();
-        if (isTrackpad && mode === 'swipe') {
-          this._handleSwipeWheel(e.deltaX);
-        } else {
-          this._handleWheelZoom(e, isTrackpad);
-        }
-        this._scheduleWheelGestureReset();
-      };
-
-      this.nodes.canvas.addEventListener('wheel', wheelHandler, {
-        passive: false,
-      });
+      );
       // Also listen on overlay for calibration events if they bubble up or occur outside canvas
       this.nodes.overlay.addEventListener(
         'wheel',
@@ -855,69 +763,7 @@
           this.nodes.imgNode.setPointerCapture(e.pointerId);
         } catch {}
       });
-      window.addEventListener('pointermove', (e) => {
-        if (this._dragPointerId !== e.pointerId) {
-          return;
-        }
-        this._handleUserActivity();
-
-        // If pinching, cancel drag to avoid conflict
-        if (this._isPinching) {
-          this._dragPointerId = null;
-          return;
-        }
-
-        // Check for swipe down start
-        if (!this._isVerticalSwipe && this._dragStart) {
-          // Only allow swipe-to-close on touch devices
-          if (e.pointerType !== 'touch') {
-            // For mouse/pen, treat as normal pan (fall through)
-          } else {
-            const totalDy = e.clientY - this._dragStart.y;
-            const totalDx = e.clientX - this._dragStart.x;
-            const isZoomedOut =
-              Math.abs(this.state.scale - (this.state.baseScale || 1)) <
-              PAN_THRESHOLD;
-
-            if (
-              isZoomedOut &&
-              totalDy > 0 &&
-              Math.abs(totalDy) > Math.abs(totalDx) &&
-              totalDy > SWIPE_THRESHOLD_PX
-            ) {
-              this._isVerticalSwipe = true;
-              this._swipeIntent = true;
-            }
-          }
-        }
-
-        if (this._isVerticalSwipe) {
-          const dy = e.clientY - this._dragLast.y;
-          this.state.translateY += dy;
-          this._dragLast.x = e.clientX;
-          this._dragLast.y = e.clientY;
-          this._startRenderLoop();
-          return;
-        }
-
-        // Disable pan without zoom on mobile/touch
-        if (
-          e.pointerType === 'touch' &&
-          Math.abs(this.state.scale - (this.state.baseScale || 1)) <
-            PAN_THRESHOLD
-        ) {
-          return;
-        }
-
-        const dx = e.clientX - this._dragLast.x;
-        const dy = e.clientY - this._dragLast.y;
-        this._dragLast.x = e.clientX;
-        this._dragLast.y = e.clientY;
-        this.state.translateX += dx;
-        this.state.translateY += dy;
-        this._constrainAndSync();
-        this._startRenderLoop();
-      });
+      window.addEventListener('pointermove', (e) => this._handlePointerMove(e));
       window.addEventListener('pointerup', (e) => {
         if (this._dragPointerId === e.pointerId) {
           if (this._isVerticalSwipe) {
@@ -1028,6 +874,91 @@
         },
         { passive: false }
       );
+    }
+
+    _handleWheelEvent(e) {
+      if (!this.state.open) {
+        return;
+      }
+
+      const source = this._determineWheelSource(e);
+      const isTrackpad = source === 'trackpad';
+
+      if (this.calibrationActive) {
+        if (isTrackpad) {
+          this._handleCalibrationWheel(e);
+        }
+        return;
+      }
+
+      // Ignore events during cooldown (e.g. inertia after calibration)
+      if (this.calibrationCooldown && Date.now() < this.calibrationCooldown) {
+        return;
+      }
+
+      // Mouse wheel handling: ctrl+wheel = zoom, plain wheel = navigate images
+      if (!isTrackpad) {
+        e.preventDefault();
+        this._handleUserActivity();
+        if (e.ctrlKey) {
+          // Ctrl+wheel = zoom
+          this._handleWheelZoom(e, false);
+        } else {
+          // Plain mouse wheel = navigate images
+          this._handleMouseWheelNavigation(e.deltaY);
+        }
+        return;
+      }
+
+      if (isTrackpad && this.needsCalibration && !this.calibrationActive) {
+        e.preventDefault();
+        this._showCalibration('trackpad');
+        return;
+      }
+
+      this._handleTrackpadWheel(e);
+    }
+
+    _handleTrackpadWheel(e) {
+      const now = Date.now();
+      const timeSinceLastNav = now - (this._lastSwipeNavTime || 0);
+      const timeSinceLastWheel = now - (this._lastWheelEventTime || 0);
+
+      // If mode was locked after a swipe navigation, only reset when:
+      // 1. Debounce period has passed (500ms since last nav), AND
+      // 2. Either there's been a significant pause in wheel events (>150ms)
+      //    OR we detect a new gesture start (acceleration in deltaX)
+      // This prevents unlocking during continuous fast swiping with brief gaps,
+      // but allows rapid intentional swipes.
+      if (this._swipeModeLocked) {
+        const absDeltaX = Math.abs(e.deltaX);
+        // Check for significant acceleration (new swipe start)
+        // We use a threshold of 5 to filter out noise/minor fluctuations in inertia
+        const isAcceleration =
+          absDeltaX >
+          (this._lastWheelDeltaX || 0) + WHEEL_ACCELERATION_THRESHOLD;
+
+        if (
+          timeSinceLastNav >= SWIPE_DEBOUNCE &&
+          (timeSinceLastWheel > UNLOCK_WHEEL_GAP || isAcceleration)
+        ) {
+          this._swipeModeLocked = false;
+          this._wheelMode = null;
+          this._wheelSwipeAccum = 0;
+        }
+      }
+      this._lastWheelEventTime = now;
+      this._lastWheelDeltaX = Math.abs(e.deltaX);
+
+      this._handleUserActivity();
+      const mode = this._detectWheelMode(e);
+      e.preventDefault();
+      if (mode === 'swipe') {
+        this._handleSwipeWheel(e.deltaX);
+      } else {
+        this._handleWheelZoom(e, true);
+      }
+      this._scheduleWheelGestureReset();
     }
 
     _handleSwipeWheel(deltaX) {
@@ -2080,94 +2011,133 @@
         return;
       }
       this._handleUserActivity();
-      // Prefer modern physical-key 'code' (layout independent) but fall back to legacy 'key'
-      const code = e.code || '';
-      const key = e.key || '';
-      const kLower = String(key).toLowerCase();
 
-      // Close
+      const code = e.code;
+      const key = e.key;
+      const kLower = key.toLowerCase();
+
       if (code === 'Escape' || key === 'Escape' || key === 'Esc') {
         this.close();
         return;
       }
 
-      if (this._handleNavigation(code, key, kLower)) {
+      if (this._handleNavigationKey(code, kLower)) {
         return;
       }
-      if (this._handleZoom(code, key)) {
+      if (this._handleZoomKey(code, key)) {
         return;
       }
 
-      if (this._isResetZoomKey(code, key)) {
+      if (['Digit0', 'Numpad0'].includes(code) || ['0', ')'].includes(key)) {
         this._resetZoom();
-      } else if (code === 'KeyF' || kLower === 'f') {
+        return;
+      }
+
+      // Fullscreen
+      if (code === 'KeyF' || kLower === 'f') {
         this._toggleFullscreen();
       }
     }
 
-    _handleNavigation(code, key, kLower) {
-      if (this._isNextKey(code, key, kLower)) {
+    _handleNavigationKey(code, kLower) {
+      if (
+        ['ArrowRight', 'KeyL', 'Right'].includes(code) ||
+        ['arrowright', 'right', 'l'].includes(kLower)
+      ) {
         this.next();
         return true;
       }
-      if (this._isPrevKey(code, key, kLower)) {
+      if (
+        ['ArrowLeft', 'KeyH', 'Left'].includes(code) ||
+        ['arrowleft', 'left', 'h'].includes(kLower)
+      ) {
         this.prev();
         return true;
       }
       return false;
     }
 
-    _handleZoom(code, key) {
-      if (this._isZoomInKey(code, key)) {
+    _handleZoomKey(code, key) {
+      if (['Equal', 'NumpadAdd'].includes(code) || ['+', '='].includes(key)) {
         this._zoomBy(ZOOM_FACTOR);
         return true;
       }
-      if (this._isZoomOutKey(code, key)) {
+      if (
+        ['Minus', 'NumpadSubtract'].includes(code) ||
+        ['-', '_'].includes(key)
+      ) {
         this._zoomBy(1 / ZOOM_FACTOR);
         return true;
       }
       return false;
     }
 
-    _isNextKey(code, key, kLower) {
-      return (
-        code === 'ArrowRight' ||
-        code === 'KeyL' ||
-        key === 'ArrowRight' ||
-        kLower === 'l' ||
-        key === 'Right'
-      );
+    _handlePointerMove(e) {
+      if (this._dragPointerId !== e.pointerId) {
+        return;
+      }
+      this._handleUserActivity();
+
+      // If pinching, cancel drag to avoid conflict
+      if (this._isPinching) {
+        this._dragPointerId = null;
+        return;
+      }
+
+      // Check for swipe down start
+      if (!this._isVerticalSwipe && this._dragStart) {
+        this._checkForVerticalSwipe(e);
+      }
+
+      if (this._isVerticalSwipe) {
+        const dy = e.clientY - this._dragLast.y;
+        this.state.translateY += dy;
+        this._dragLast.x = e.clientX;
+        this._dragLast.y = e.clientY;
+        this._startRenderLoop();
+        return;
+      }
+
+      // Disable pan without zoom on mobile/touch
+      if (
+        e.pointerType === 'touch' &&
+        Math.abs(this.state.scale - (this.state.baseScale || 1)) < PAN_THRESHOLD
+      ) {
+        return;
+      }
+
+      const dx = e.clientX - this._dragLast.x;
+      const dy = e.clientY - this._dragLast.y;
+      this._dragLast.x = e.clientX;
+      this._dragLast.y = e.clientY;
+      this.state.translateX += dx;
+      this.state.translateY += dy;
+      this._constrainAndSync();
+      this._startRenderLoop();
     }
 
-    _isPrevKey(code, key, kLower) {
-      return (
-        code === 'ArrowLeft' ||
-        code === 'KeyH' ||
-        key === 'ArrowLeft' ||
-        kLower === 'h' ||
-        key === 'Left'
-      );
-    }
+    _checkForVerticalSwipe(e) {
+      // Only allow swipe-to-close on touch devices
+      if (e.pointerType !== 'touch') {
+        // For mouse/pen, treat as normal pan (fall through)
+        return;
+      }
 
-    _isZoomInKey(code, key) {
-      return (
-        code === 'Equal' || code === 'NumpadAdd' || key === '+' || key === '='
-      );
-    }
+      const totalDy = e.clientY - this._dragStart.y;
+      const totalDx = e.clientX - this._dragStart.x;
+      const isZoomedOut =
+        Math.abs(this.state.scale - (this.state.baseScale || 1)) <
+        PAN_THRESHOLD;
 
-    _isZoomOutKey(code, key) {
-      return (
-        code === 'Minus' ||
-        code === 'NumpadSubtract' ||
-        key === '-' ||
-        key === '_'
-      );
-    }
-
-    _isResetZoomKey(code, key) {
-      return (
-        code === 'Digit0' || code === 'Numpad0' || key === '0' || key === ')'
-      );
+      if (
+        isZoomedOut &&
+        totalDy > 0 &&
+        Math.abs(totalDy) > Math.abs(totalDx) &&
+        totalDy > SWIPE_THRESHOLD_PX
+      ) {
+        this._isVerticalSwipe = true;
+        this._swipeIntent = true;
+      }
     }
 
     _handleTouchEnd(e) {
@@ -2221,9 +2191,6 @@
     return inst;
   }
 
-  // Backwards-compatible alias used elsewhere in the code
-  const initSpotlightOnce = initSpotlight;
-
   window.addEventListener('click', (e) => {
     const target = e.target.closest('img');
     if (!target) {
@@ -2248,13 +2215,13 @@
     },
     open: (collectionIndex = 0, itemIndex = 0) => {
       if (!window.__spotlight_instance) {
-        initSpotlightOnce();
+        initSpotlight();
       }
       window.__spotlight_instance.openCollection(collectionIndex, itemIndex);
     },
     rescan: () => {
       // Re-scan page (e.g. after dynamic content load)
-      const inst = window.__spotlight_instance || initSpotlightOnce();
+      const inst = window.__spotlight_instance || initSpotlight();
       // Simple strategy: rebuild instance
       try {
         // remove overlay if present
@@ -2263,7 +2230,7 @@
         }
       } catch {}
       delete window.__spotlight_instance;
-      return initSpotlightOnce();
+      return initSpotlight();
     },
   };
 })();
