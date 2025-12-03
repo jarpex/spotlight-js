@@ -128,7 +128,9 @@
       this._lastSwipeNavTime = 0; // Timestamp of last horizontal swipe navigation
       this._lastWheelEventTime = 0; // Timestamp of last wheel event (for inertia detection)
       this._lastWheelDeltaX = 0; // Magnitude of last wheel delta X (for acceleration detection)
+      this._lastMouseWheelNav = 0; // Timestamp of last mouse wheel navigation
       this._swipeModeLocked = false; // True during debounce after navigation
+      this._trackpadSwipeToClose = false; // Flag for trackpad swipe to close gesture
       this._pendingSlideDir = 0;
       this.touchStart = null;
       this._dragPointerId = null;
