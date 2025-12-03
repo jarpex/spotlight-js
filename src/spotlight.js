@@ -39,6 +39,7 @@
   const SWIPE_SCALE_THRESHOLD = 0.25; // Max scale deviation to allow swipe navigation
   const SWIPE_THRESHOLD_PX = 20; // Minimum pixel distance for a swipe
   const SWIPE_DOWN_THRESHOLD = 100; // Pixels to drag down to close
+  const SWIPE_CLOSE_DIVISOR = 150; // Divisor for swipe-to-close animation progress
 
   // Wheel Interaction
   const WHEEL_SCALE_THRESHOLD_NEAR = 0.8; // Threshold for "near base scale" check
@@ -137,6 +138,9 @@
       this._dragLast = { x: 0, y: 0 };
       this._isPinching = false;
       this.pointers = new Map();
+      this._caughtErrors = [];
+      // Debug mode: allow console output for debugging if enabled
+      this.debug = Boolean(window && window.__spotlight_debug__);
 
       // Input modality detection
       this._lastTouchTime = 0;
@@ -145,14 +149,44 @@
         document.body?.classList.contains('using-trackpad') || false;
 
       // Trackpad Inversion
-      const storedNatural = window.localStorage.getItem(LS_KEY_NATURAL);
-      this.invertedScroll = storedNatural === 'true';
+      try {
+        const storedNatural = window.localStorage.getItem(LS_KEY_NATURAL);
+        this.invertedScroll = storedNatural === 'true';
+        this.needsCalibration = storedNatural === null;
+      } catch (err) {
+        this._reportError('localStorage.getItem', err);
+        this.invertedScroll = false;
+        this.needsCalibration = true;
+      }
       this.calibrationActive = false;
-      this.needsCalibration = storedNatural === null;
       this.calibrationSource = null;
       this._pendingCalibrationListener = null;
 
       this._init();
+    }
+
+    _reportError(op, err) {
+      try {
+        this._caughtErrors.push({ op, err, time: Date.now() });
+      } catch {
+        // If the array is not writable for some reason, fall back to noop
+      }
+      if (
+        this.debug &&
+        typeof globalThis !== 'undefined' &&
+        globalThis.console &&
+        globalThis.console.warn
+      ) {
+        globalThis.console.warn(`[Spotlight] ${op}:`, err);
+      }
+    }
+
+    _getCapturedErrors() {
+      return Array.from(this._caughtErrors || []);
+    }
+
+    _clearCapturedErrors() {
+      this._caughtErrors = [];
     }
 
     _init() {
@@ -322,11 +356,20 @@
       this.calibrationStep = 0;
       this.calibrationStartTime = Date.now();
 
-      const cal = create('div', { class: 'spot-calibration' });
+      const cal = create('div', {
+        class: 'spot-calibration',
+        role: 'dialog',
+        'aria-labelledby': 'spot-calibration-title',
+        'aria-describedby': 'spot-calibration-text',
+      });
       const content = create('div', { class: 'spot-calibration-content' });
 
-      const title = create('h3', {}, ['Trackpad Setup']);
-      const text = create('p', {}, ['Swipe down repeatedly to calibrate.']);
+      const title = create('h3', { id: 'spot-calibration-title' }, [
+        'Trackpad Setup',
+      ]);
+      const text = create('p', { id: 'spot-calibration-text' }, [
+        'Swipe down repeatedly to calibrate.',
+      ]);
 
       const animContainer = create('div', { class: 'trackpad-container' });
       animContainer.innerHTML = `
@@ -337,7 +380,10 @@
       `;
 
       const progressBar = create('div', { class: 'spot-progress-bar' });
-      const progressValue = create('div', { class: 'spot-progress-value' });
+      const progressValue = create('div', {
+        class: 'spot-progress-value',
+        'aria-live': 'polite',
+      });
       progressBar.appendChild(progressValue);
 
       content.appendChild(title);
@@ -367,11 +413,8 @@
         return;
       }
 
-      // Startup delay - ignore input for first 400ms after calibration appears
-      if (
-        this.calibrationStartTime &&
-        Date.now() - this.calibrationStartTime < INPUT_DETECTION_DELAY
-      ) {
+      // Startup delay - ignore input for INPUT_DETECTION_DELAY after calibration appears
+      if (this._isCalibrationStartupDelayActive()) {
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -391,50 +434,64 @@
       const TARGET = 80;
       const progress = Math.min(Math.abs(this.calibrationAccum) / TARGET, 1);
 
+      this._setCalibrationProgress(progress);
+    }
+
+    _isCalibrationStartupDelayActive() {
+      return (
+        this.calibrationStartTime &&
+        Date.now() - this.calibrationStartTime < INPUT_DETECTION_DELAY
+      );
+    }
+
+    _setCalibrationProgress(progress) {
       if (this.nodes.calibrationProgress) {
         this.nodes.calibrationProgress.style.width = `${progress * PERCENTAGE}%`;
       }
 
-      if (progress >= 1) {
-        // Step 1 complete?
-        if (this.calibrationStep === 0) {
-          this.calibrationStep = 1;
-          this.calibrationAccum = 0;
-          this.calibrationStartTime = Date.now(); // Reset delay for step 2
-          if (this.nodes.calibrationProgress) {
-            this.nodes.calibrationProgress.style.width = '0%';
-          }
-          if (this.nodes.calibrationText) {
-            this.nodes.calibrationText.textContent = 'One more time...';
-          }
-          return;
-        }
-
-        // Finished
-        // If accum is negative -> Natural (deltaY < 0)
-        // If accum is positive -> Standard (deltaY > 0)
-        const isNatural = this.calibrationAccum < 0;
-
-        this.invertedScroll = isNatural;
-        window.localStorage.setItem(LS_KEY_NATURAL, String(isNatural));
-        this.needsCalibration = false;
-
-        // Set cooldown to prevent immediate gesture triggering (e.g. swipe-to-close)
-        this.calibrationCooldown = Date.now() + CALIBRATION_COOLDOWN;
-
-        // Close calibration
-        this.nodes.calibration.classList.remove('visible');
-        setTimeout(() => {
-          if (this.nodes.calibration) {
-            this.nodes.calibration.remove();
-            this.nodes.calibration = null;
-            this.nodes.calibrationProgress = null;
-            this.nodes.calibrationText = null;
-          }
-          this.calibrationActive = false;
-          this.calibrationSource = null;
-        }, CALIBRATION_CLOSE_DELAY);
+      if (progress < 1) {
+        return;
       }
+
+      // Step 1 complete?
+      if (this.calibrationStep === 0) {
+        this.calibrationStep = 1;
+        this.calibrationAccum = 0;
+        this.calibrationStartTime = Date.now(); // Reset delay for step 2
+        if (this.nodes.calibrationProgress) {
+          this.nodes.calibrationProgress.style.width = '0%';
+        }
+        if (this.nodes.calibrationText) {
+          this.nodes.calibrationText.textContent = 'One more time...';
+        }
+        return;
+      }
+
+      // Finished
+      const isNatural = this.calibrationAccum < 0;
+      this.invertedScroll = isNatural;
+      try {
+        window.localStorage.setItem(LS_KEY_NATURAL, String(isNatural));
+      } catch (err) {
+        this._reportError('localStorage.setItem', err);
+      }
+      this.needsCalibration = false;
+
+      // Set cooldown to prevent immediate gesture triggering (e.g. swipe-to-close)
+      this.calibrationCooldown = Date.now() + CALIBRATION_COOLDOWN;
+
+      // Close calibration
+      this.nodes.calibration.classList.remove('visible');
+      setTimeout(() => {
+        if (this.nodes.calibration) {
+          this.nodes.calibration.remove();
+          this.nodes.calibration = null;
+          this.nodes.calibrationProgress = null;
+          this.nodes.calibrationText = null;
+        }
+        this.calibrationActive = false;
+        this.calibrationSource = null;
+      }, CALIBRATION_CLOSE_DELAY);
     }
 
     // Scan <article> and .gallery for images
@@ -763,7 +820,9 @@
         this._isVerticalSwipe = false;
         try {
           this.nodes.imgNode.setPointerCapture(e.pointerId);
-        } catch {}
+        } catch (err) {
+          this._reportError('setPointerCapture', err);
+        }
       });
       window.addEventListener('pointermove', (e) => this._handlePointerMove(e));
       window.addEventListener('pointerup', (e) => {
@@ -781,7 +840,9 @@
           }
           try {
             this.nodes.imgNode.releasePointerCapture(e.pointerId);
-          } catch {}
+          } catch (err) {
+            this._reportError('releasePointerCapture', err);
+          }
           this._dragPointerId = null;
         }
       });
@@ -963,6 +1024,15 @@
       this._scheduleWheelGestureReset();
     }
 
+    _commitSwipeNavigation(direction) {
+      const now = Date.now();
+      this._lastSwipeNavTime = now;
+      this._wheelSwipeAccum = 0;
+      // Lock mode to 'zoom' to prevent inertia from re-triggering
+      this._wheelMode = 'zoom';
+      this._swipeModeLocked = true;
+    }
+
     _handleSwipeWheel(deltaX) {
       const now = Date.now();
       const timeSinceLastNav = now - (this._lastSwipeNavTime || 0);
@@ -991,18 +1061,10 @@
 
       this._wheelSwipeAccum += dx;
       if (this._wheelSwipeAccum > threshold) {
-        this._lastSwipeNavTime = now;
-        this._wheelSwipeAccum = 0;
-        // Lock mode to 'zoom' to prevent inertia from re-triggering
-        this._wheelMode = 'zoom';
-        this._swipeModeLocked = true;
+        this._commitSwipeNavigation(1);
         this.next();
       } else if (this._wheelSwipeAccum < -threshold) {
-        this._lastSwipeNavTime = now;
-        this._wheelSwipeAccum = 0;
-        // Lock mode to 'zoom' to prevent inertia from re-triggering
-        this._wheelMode = 'zoom';
-        this._swipeModeLocked = true;
+        this._commitSwipeNavigation(-1);
         this.prev();
       }
     }
@@ -1643,10 +1705,9 @@
         allowAnimation &&
         this._swipeIntent
       ) {
-        const SWIPE_ANIM_FACTOR = 1.5;
         const progress = Math.min(
           1,
-          Math.abs(translateY) / (SWIPE_DOWN_THRESHOLD * SWIPE_ANIM_FACTOR)
+          Math.abs(translateY) / SWIPE_CLOSE_DIVISOR
         );
         const opacity = 1 - progress;
 
@@ -2215,6 +2276,19 @@
     get instance() {
       return window.__spotlight_instance || null;
     },
+    get debug() {
+      return (
+        (window.__spotlight_instance && window.__spotlight_instance.debug) ||
+        false
+      );
+    },
+    set debug(val) {
+      const v = Boolean(val);
+      window.__spotlight_debug__ = v;
+      if (window.__spotlight_instance) {
+        window.__spotlight_instance.debug = v;
+      }
+    },
     open: (collectionIndex = 0, itemIndex = 0) => {
       if (!window.__spotlight_instance) {
         initSpotlight();
@@ -2230,9 +2304,25 @@
         if (inst.overlay && inst.overlay.parentNode) {
           inst.overlay.parentNode.removeChild(inst.overlay);
         }
-      } catch {}
+      } catch (err) {
+        if (inst && typeof inst._reportError === 'function') {
+          inst._reportError('rescan.removeOverlay', err);
+        }
+      }
       delete window.__spotlight_instance;
       return initSpotlight();
+    },
+    getCapturedErrors: () => {
+      return (
+        (window.__spotlight_instance &&
+          window.__spotlight_instance._getCapturedErrors()) ||
+        []
+      );
+    },
+    clearCapturedErrors: () => {
+      if (window.__spotlight_instance) {
+        window.__spotlight_instance._clearCapturedErrors();
+      }
     },
   };
 })();
