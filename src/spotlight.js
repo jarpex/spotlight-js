@@ -53,6 +53,9 @@
   const WHEEL_ACCELERATION_THRESHOLD = 5; // Threshold for wheel acceleration detection
   const UNLOCK_WHEEL_GAP = 150; // Time gap to unlock wheel mode
 
+  // WheelEvent mode constant (DOM_DELTA_PIXEL)
+  const DOM_DELTA_PIXEL = 0; // WheelEvent.DOM_DELTA_PIXEL
+
   // Input & Calibration
   const INPUT_DETECTION_DELAY = 400; // Delay for input detection (ms)
   const CALIBRATION_COOLDOWN = 800; // Cooldown after calibration (ms)
@@ -66,6 +69,7 @@
   const CURSOR_SCALE_THRESHOLD = 0.02; // Threshold for changing cursor to grab
 
   const LS_KEY_NATURAL = 'spotlight-natural-scrolling';
+  const ANNOUNCE_CLEAR_DELAY = 1000; // Delay to clear live announcements (ms)
 
   // Utility
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
@@ -278,9 +282,8 @@
       if (!event) {
         return false;
       }
-
       // Non-pixel wheel modes originate from mice/keyboard fallback.
-      const DOM_DELTA_PIXEL = 0;
+      // Compare to global DOM_DELTA_PIXEL constant
       if (
         typeof event.deltaMode === 'number' &&
         event.deltaMode !== DOM_DELTA_PIXEL
@@ -359,8 +362,10 @@
       const cal = create('div', {
         class: 'spot-calibration',
         role: 'dialog',
+        'aria-modal': 'true',
         'aria-labelledby': 'spot-calibration-title',
         'aria-describedby': 'spot-calibration-text',
+        tabindex: '-1',
       });
       const content = create('div', { class: 'spot-calibration-content' });
 
@@ -368,7 +373,7 @@
         'Trackpad Setup',
       ]);
       const text = create('p', { id: 'spot-calibration-text' }, [
-        'Swipe down repeatedly to calibrate.',
+        'Swipe two fingers down to set scroll direction',
       ]);
 
       const animContainer = create('div', { class: 'trackpad-container' });
@@ -380,9 +385,11 @@
       `;
 
       const progressBar = create('div', { class: 'spot-progress-bar' });
+      // Remove aria-live to prevent frequent updates from flooding screen readers;
+      // announce distributed messages using the global live region.
       const progressValue = create('div', {
         class: 'spot-progress-value',
-        'aria-live': 'polite',
+        'aria-hidden': 'true',
       });
       progressBar.appendChild(progressValue);
 
@@ -397,9 +404,41 @@
       this.nodes.calibrationProgress = progressValue;
       this.nodes.calibrationText = text;
 
+      // Focus handling: trap focus inside the calibration dialog and allow keyboard escape to close
+      this._lastFocusedBeforeCalibration = document.activeElement;
+      // Add a skip/close button for keyboard users
+      const skipBtn = create(
+        'button',
+        {
+          id: 'spot-calibration-skip',
+          'aria-label': 'Skip calibration',
+          type: 'button',
+        },
+        ['Skip']
+      );
+      // Clicking skip should fully disable the calibration prompt (do not re-open)
+      skipBtn.addEventListener('click', () => this._skipCalibration());
+      content.appendChild(skipBtn);
+
       // Fade in
       requestAnimationFrame(() => {
         cal.classList.add('visible');
+        // Focus the dialog
+        cal.focus();
+        // Install keydown handler
+        this._calibrationKeydownHandler = (ev) =>
+          this._handleCalibrationKeydown(ev);
+        // Ensure calibration keydown listener is scoped to the calibration dialog
+        cal.addEventListener('keydown', this._calibrationKeydownHandler);
+        // Trap focus - store focusable elements
+        this._calibrationFocusable = Array.from(
+          cal.querySelectorAll(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+          )
+        ).filter((el) => !el.hasAttribute('disabled'));
+        if (this._calibrationFocusable && this._calibrationFocusable.length) {
+          this._calibrationFocusable[0].focus();
+        }
       });
     }
 
@@ -464,6 +503,14 @@
         if (this.nodes.calibrationText) {
           this.nodes.calibrationText.textContent = 'One more time...';
         }
+        // Announce step progression to assistive tech via live region
+        if (this.liveRegion) {
+          this.liveRegion.textContent =
+            'Trackpad calibration: step 1 complete. One more time.';
+          setTimeout(() => {
+            this.liveRegion.textContent = '';
+          }, ANNOUNCE_CLEAR_DELAY);
+        }
         return;
       }
 
@@ -480,6 +527,14 @@
       // Set cooldown to prevent immediate gesture triggering (e.g. swipe-to-close)
       this.calibrationCooldown = Date.now() + CALIBRATION_COOLDOWN;
 
+      // Announce completion
+      if (this.liveRegion) {
+        this.liveRegion.textContent = 'Trackpad calibration complete.';
+        const COMPLETION_ANNOUNCE_CLEAR_OFFSET = 200; // small additional delay for completion message
+        setTimeout(() => {
+          this.liveRegion.textContent = '';
+        }, ANNOUNCE_CLEAR_DELAY + COMPLETION_ANNOUNCE_CLEAR_OFFSET);
+      }
       // Close calibration
       this.nodes.calibration.classList.remove('visible');
       setTimeout(() => {
@@ -488,10 +543,126 @@
           this.nodes.calibration = null;
           this.nodes.calibrationProgress = null;
           this.nodes.calibrationText = null;
+          // Cleanup focus trap/keyboard handlers
+          if (this._calibrationKeydownHandler) {
+            try {
+              if (
+                this.nodes &&
+                this.nodes.calibration &&
+                typeof this.nodes.calibration.removeEventListener === 'function'
+              ) {
+                this.nodes.calibration.removeEventListener(
+                  'keydown',
+                  this._calibrationKeydownHandler
+                );
+              } else {
+                document.removeEventListener(
+                  'keydown',
+                  this._calibrationKeydownHandler
+                );
+              }
+            } catch {
+              // Prevent errors during cleanup from bubbling up
+            }
+            this._calibrationKeydownHandler = null;
+          }
+          this._calibrationFocusable = null;
         }
         this.calibrationActive = false;
         this.calibrationSource = null;
       }, CALIBRATION_CLOSE_DELAY);
+    }
+
+    _handleCalibrationKeydown(ev) {
+      if (!this.calibrationActive) {
+        return;
+      }
+      if (ev.key === 'Escape' || ev.key === 'Esc') {
+        // Prevent Escape from bubbling to the global key handler and closing the overlay.
+        ev.preventDefault();
+        ev.stopPropagation();
+        // Treat Escape as a 'skip' action – the user intends to dismiss the calibration without completing it
+        this._skipCalibration();
+        return;
+      }
+      if (ev.key !== 'Tab') {
+        return;
+      }
+      const focusables = this._calibrationFocusable || [];
+      if (!focusables.length) {
+        return;
+      }
+      const activeIndex = focusables.indexOf(document.activeElement);
+      let nextIndex = 0;
+      if (ev.shiftKey) {
+        nextIndex = activeIndex > 0 ? activeIndex - 1 : focusables.length - 1;
+      } else {
+        nextIndex = (activeIndex + 1) % focusables.length;
+      }
+      ev.preventDefault();
+      ev.stopPropagation();
+      focusables[nextIndex].focus();
+    }
+
+    _closeCalibration() {
+      if (!this.calibrationActive || !this.nodes.calibration) {
+        return;
+      }
+      this.nodes.calibration.classList.remove('visible');
+      if (this._calibrationKeydownHandler) {
+        try {
+          if (
+            this.nodes &&
+            this.nodes.calibration &&
+            typeof this.nodes.calibration.removeEventListener === 'function'
+          ) {
+            this.nodes.calibration.removeEventListener(
+              'keydown',
+              this._calibrationKeydownHandler
+            );
+          } else {
+            document.removeEventListener(
+              'keydown',
+              this._calibrationKeydownHandler
+            );
+          }
+        } catch {
+          // swallow cleanup errors
+        }
+        this._calibrationKeydownHandler = null;
+      }
+      this._calibrationFocusable = null;
+      this.calibrationActive = false;
+      this.calibrationSource = null;
+      if (this._pendingCalibrationListener) {
+        window.removeEventListener('wheel', this._pendingCalibrationListener);
+        this._pendingCalibrationListener = null;
+      }
+      setTimeout(() => {
+        if (this.nodes.calibration) {
+          this.nodes.calibration.remove();
+          this.nodes.calibration = null;
+          this.nodes.calibrationProgress = null;
+          this.nodes.calibrationText = null;
+        }
+        if (
+          this._lastFocusedBeforeCalibration &&
+          typeof this._lastFocusedBeforeCalibration.focus === 'function'
+        ) {
+          this._lastFocusedBeforeCalibration.focus();
+        }
+      }, CALIBRATION_CLOSE_DELAY);
+    }
+
+    _skipCalibration() {
+      // Mark calibration as not required and clear any progress
+      this.needsCalibration = false;
+      this.calibrationAccum = 0;
+      this.calibrationStep = 0;
+      this.calibrationStartTime = 0;
+      // Prevent immediate re-triggering
+      this.calibrationCooldown = Date.now() + CALIBRATION_COOLDOWN;
+      this._closeCalibration();
     }
 
     // Scan <article> and .gallery for images
@@ -2046,15 +2217,23 @@
       .spot-calibration.visible { opacity:1; pointer-events:auto; }
       .spot-calibration-content { background:var(--spot-ui-bg); color:var(--spot-ui-fg); padding:40px; border-radius:12px; text-align:center; max-width:400px; box-shadow:var(--spot-shadow); backdrop-filter:blur(10px); }
       .spot-calibration h3 { margin:0 0 15px; font-size:20px; }
-      .spot-calibration p { margin:0 0 30px; opacity:0.8; line-height:1.5; }
+      .spot-calibration p { margin:0; opacity:0.8;}
       
       /* Trackpad Animation Styles */
       .trackpad-container { transform: scale(0.6); margin: 0 auto; width: 400px; }
       .trackpad { width: 400px; height: 250px; background: #ffffff; border-radius: 20px; border: 2px solid #ccc; position: relative; overflow: hidden; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); margin: 0 auto; }
       .finger { width: 32px; height: 32px; background: #007AFF; box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); border-radius: 50%; position: absolute; }
       
-      .spot-progress-bar { width: 100%; height: 6px; background: rgba(128,128,128,0.2); border-radius: 3px; margin-top: 25px; overflow: hidden; }
+      .spot-progress-bar { width: 100%; height: 9px; background: rgba(128,128,128,0.2); border-radius: 6px; overflow: hidden; }
       .spot-progress-value { width: 0%; height: 100%; background: #007AFF; transition: width 0.1s linear; }
+
+      /* Calibration skip button */
+      #spot-calibration-skip { position: absolute; top: 15px; right: 20px; opacity: 0.25; transition: opacity 150ms ease; z-index: 10; cursor: pointer; background: transparent; border: none; padding: 0; margin: 0; color: var(--spot-ui-fg); font-weight: 600; font-size: 14px; }
+      #spot-calibration-skip:hover { opacity: 1; }
+      /* Disable default browser focus outline while providing a subtle visible focus ring for keyboard users */
+      #spot-calibration-skip:focus { outline: none; }
+      #spot-calibration-skip:focus-visible { outline: none; }
+      #spot-calibration-skip:active { transform: scale(0.98); }
 
       /* Animations */
       .finger.swipe-down { left: 50%; transform: translateX(-50%); animation: swipeDown 2s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
