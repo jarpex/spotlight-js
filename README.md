@@ -74,17 +74,80 @@ Or use a gallery:
 
 Click any image to open the viewer.
 
+## Development
+
+To contribute or build Spotlight from source:
+
+1. **Clone the repository:**
+
+   ```bash
+   git clone https://github.com/jarpex/spotlight-js.git
+   cd spotlight-js
+   ```
+
+2. **Install dependencies:**
+
+   ```bash
+   npm install
+   ```
+
+3. **Build the project:**
+
+   Spotlight offers two build modes:
+   - **Optimized Build (Default):**
+
+     ```bash
+     npm run build
+     ```
+
+     Creates a highly compressed bundle in `dist/spotlight.min.js`. This mode aggressively renames CSS classes and IDs to short tokens (e.g., `a`, `b`) to minimize size.
+     _Warning: This may cause conflicts if your page uses similar short class names or IDs._
+
+   - **Safe Build:**
+     ```bash
+     npm run build:safe
+     ```
+     Creates a standard minified bundle that preserves original class names and IDs. Use this version to avoid conflicts with other scripts or styles on your page, or if you need to use the Programmatic API.
+
 ## Programmatic API
 
+> **Note:** The programmatic API is available only in the **safe build**.
+>
+> The standard `npm run build` command uses aggressive minification that renames classes and symbols, making the API inaccessible. To use the API, build the project with `npm run build:safe`.
+
+### Static Methods
+
+- `Spotlight.open(collectionIndex, itemIndex)` — Opens the gallery. Defaults to the first image in the first collection if no indices are provided.
+- `Spotlight.rescan()` — Re-scans the DOM for new images. Call this after dynamically adding content to the page.
+- `Spotlight.getCapturedErrors()` — Retrieves a list of non-fatal errors logged by the library.
+- `Spotlight.clearCapturedErrors()` — Clears the list of captured errors.
+
+### Properties
+
+- `Spotlight.instance` — Returns the active Spotlight instance, or `null` if the gallery has not been initialized.
+- `Spotlight.debug` — Enables verbose console logging when set to `true`. Only functional in development builds.
+
+### Instance Methods
+
+Access the instance via `Spotlight.instance`.
+
+- `instance.attachImage(element, collectionIndex, itemIndex)` — Manually registers an image element with the Spotlight gallery.
+
+### Example
+
 ```js
-// Open collection 0, item 0
+// Enable debug mode
+Spotlight.debug = true;
+
+// Open the first image in the first collection
 Spotlight.open(0, 0);
 
-// Re-scan the page after dynamically adding images
-Spotlight.rescan();
-
-// Get current instance
-const inst = Spotlight.instance;
+// Manually attach an image
+const instance = Spotlight.instance;
+if (instance) {
+  const img = document.querySelector('#my-image');
+  instance.attachImage(img, 0, 0);
+}
 ```
 
 ## License

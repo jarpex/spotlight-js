@@ -1,5 +1,5 @@
 /*!
- * Spotlight JS v1.0.1
+ * Spotlight JS v1.0.2
  * Copyright (c) 2025 Anastasia Shebalkina
  * Licensed under the MIT License (see LICENSE)
  *
@@ -2139,7 +2139,7 @@
           background: rgba(245,245,245,0.98);
         }
       }
-      #spot-overlay { display:none; position:fixed; inset:0; z-index:2147483646; font-family:var(--spot-font); -webkit-font-smoothing:antialiased; opacity:0; transition:opacity var(--spot-anim); touch-action:none; }
+      #spot-overlay { display:none; position:fixed; inset:0; z-index:2147483646; font-family:var(--spot-font); -webkit-font-smoothing:antialiased; opacity:0; transition:opacity var(--spot-anim); touch-action:none; direction: ltr; }
       #spot-overlay, #spot-overlay * { -webkit-user-select:none; user-select:none; }
       #spot-overlay.spot-open { pointer-events:auto; opacity:1; }
       #spot-bg { position:fixed; inset:0; background:var(--spot-bg); transition:opacity var(--spot-anim); opacity:0; }
