@@ -36,10 +36,13 @@ function minifyInlineCssSvg() {
 
       let out = code;
 
-      // Minify the large injected CSS template literal assigned to `const css = `...`;
+      // Minify the large injected CSS template literal assigned to `const css = `...`;`
       out = out.replace(/const\s+css\s*=\s*`([\s\S]*?)`;/, (m, p1) => {
         try {
-          const min = csso.minify(p1).css.replace(/`/g, '\\`');
+          const min = csso
+            .minify(p1)
+            .css.replace(/\\/g, '\\\\')
+            .replace(/`/g, '\\`');
           return `const css = \`${min}\`;`;
         } catch (err) {
           return m;
@@ -63,8 +66,8 @@ function minifyInlineCssSvg() {
             ],
           });
           if (res && res.error) return svg;
-          // Escape backticks to keep template literals safe
-          return res.data.replace(/`/g, '\\`');
+          // Escape backslashes first, then backticks to keep template literals safe
+          return res.data.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
         } catch (err) {
           return svg;
         }

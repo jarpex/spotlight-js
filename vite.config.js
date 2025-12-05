@@ -43,7 +43,7 @@ function spotlightOptimizer() {
       const ids = new Set(out.match(idRegex) || []);
       const map = new Map();
       let idx = 0;
-      
+
       // Generator for short names: a, b, ... z, A ... Z, aa, ab ...
       const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
       function generateId(n) {
@@ -57,17 +57,22 @@ function spotlightOptimizer() {
 
       // Assign short names
       // Sort by length desc just in case, though greedy regex handles it
-      Array.from(ids).sort((a, b) => b.length - a.length).forEach(id => {
-        map.set(id, generateId(idx++));
-      });
+      Array.from(ids)
+        .sort((a, b) => b.length - a.length)
+        .forEach((id) => {
+          map.set(id, generateId(idx++));
+        });
 
       // Replace all occurrences
       out = out.replace(idRegex, (m) => map.get(m));
 
-      // 1. Minify the large injected CSS template literal assigned to `const css = `...`;
+      // 1. Minify the large injected CSS template literal assigned to `const css = `...`;`
       out = out.replace(/const\s+css\s*=\s*`([\s\S]*?)`;/, (m, p1) => {
         try {
-          const min = csso.minify(p1).css.replace(/`/g, '\\`');
+          const min = csso
+            .minify(p1)
+            .css.replace(/\\/g, '\\\\')
+            .replace(/`/g, '\\`');
           return `const css = \`${min}\`;`;
         } catch (err) {
           return m;
@@ -91,8 +96,8 @@ function spotlightOptimizer() {
             ],
           });
           if (res && res.error) return svg;
-          // Escape backticks to keep template literals safe
-          return res.data.replace(/`/g, '\\`');
+          // Escape backslashes first, then backticks to keep template literals safe
+          return res.data.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
         } catch (err) {
           return svg;
         }
@@ -102,35 +107,35 @@ function spotlightOptimizer() {
       const htmlRegex = /\.innerHTML\s*=\s*`([\s\S]*?)`;/g;
       let match;
       const replacements = [];
-      
+
       while ((match = htmlRegex.exec(out)) !== null) {
         const fullMatch = match[0];
         const content = match[1];
-        
+
         // Skip if it looks like it was already handled by SVG optimizer (starts with <svg)
         if (content.trim().startsWith('<svg')) continue;
 
         try {
-            const min = await htmlMinify(content, {
-                collapseWhitespace: true,
-                removeComments: true,
-                quoteCharacter: "'",
-                minifyCSS: true,
-            });
-            // Escape backticks
-            const safeMin = min.replace(/`/g, '\\`');
-            replacements.push({
-                start: match.index,
-                end: match.index + fullMatch.length,
-                replacement: fullMatch.replace(content, safeMin)
-            });
+          const min = await htmlMinify(content, {
+            collapseWhitespace: true,
+            removeComments: true,
+            quoteCharacter: "'",
+            minifyCSS: true,
+          });
+          // Escape backslashes first, then backticks
+          const safeMin = min.replace(/\\/g, '\\\\').replace(/`/g, '\\`');
+          replacements.push({
+            start: match.index,
+            end: match.index + fullMatch.length,
+            replacement: fullMatch.replace(content, safeMin),
+          });
         } catch (e) {}
       }
 
       // Apply replacements from end to start
       for (let i = replacements.length - 1; i >= 0; i--) {
-          const r = replacements[i];
-          out = out.slice(0, r.start) + r.replacement + out.slice(r.end);
+        const r = replacements[i];
+        out = out.slice(0, r.start) + r.replacement + out.slice(r.end);
       }
 
       return { code: out, map: null };
