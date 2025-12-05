@@ -1931,7 +1931,7 @@
       const scaleH = vh / intrinsicHeight;
       const viewportLandscape = vw >= vh;
 
-      let baseScale = 1;
+      let baseScale;
 
       if (viewportLandscape) {
         // Desktop / Landscape
