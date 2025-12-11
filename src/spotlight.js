@@ -60,6 +60,7 @@
   const CALIBRATION_CLOSE_DELAY = 300; // Delay to close calibration (ms)
 
   // Animation & UI
+  const ANIMATION_DURATION = 300; // Duration of open/close animations (ms)
   const SLIDE_OFFSET = 60; // Pixel offset for slide animation
   const CLOSE_DELAY = 220; // Delay before removing overlay from DOM after close (ms)
   const CONVERGENCE_SCALE = 0.001; // Convergence threshold for scale animation
@@ -732,6 +733,7 @@
       // Root overlay
       const overlay = create('div', {
         id: 'spot-overlay',
+        class: 'spot-nav-hidden',
         'aria-hidden': 'true',
         tabindex: '-1',
       });
@@ -776,7 +778,7 @@
 
       const ui = create('div', {
         id: 'spot-ui',
-        class: 'spot-ui spot-ui-visible',
+        class: 'spot-ui spot-ui-hidden',
       });
       const topbar = create('div', { id: 'spot-topbar', class: 'spot-topbar' });
       const counter = create('div', {
@@ -1574,7 +1576,7 @@
       this.state.open = true;
       this.state.collectionIndex = collectionIndex;
       this.state.itemIndex = itemIndex;
-      this._handleUserActivity();
+      // UI is hidden by default, will show on user activity
       this._showOverlay();
       this._checkCalibration();
       this._loadItem();
@@ -1583,13 +1585,22 @@
     _showOverlay() {
       this.overlay.style.display = 'block';
       this._lastFocused = document.activeElement;
+
       requestAnimationFrame(() => {
-        this.overlay.classList.add('spot-open');
-        this.overlay.setAttribute('aria-hidden', 'false');
-        document.documentElement.style.overflow = 'hidden';
-        this._showUiImmediate();
-        this._scheduleUiHide();
-        this.nodes.shell.focus();
+        requestAnimationFrame(() => {
+          this.overlay.classList.add('spot-open');
+          this.overlay.setAttribute('aria-hidden', 'false');
+          document.documentElement.style.overflow = 'hidden';
+          this.nodes.shell.focus();
+
+          if (this._uiShowTimer) {
+            clearTimeout(this._uiShowTimer);
+          }
+          this._uiShowTimer = setTimeout(() => {
+            this._showUiImmediate();
+            this._scheduleUiHide();
+          }, ANIMATION_DURATION);
+        });
       });
     }
 
@@ -1606,6 +1617,9 @@
       this._updateFullscreenButton();
       clearTimeout(this._uiHideTimer);
       clearTimeout(this._wheelSwipeTimer);
+      if (this._uiShowTimer) {
+        clearTimeout(this._uiShowTimer);
+      }
       this._wheelSwipeAccum = 0;
       this._wheelMode = null;
       this._lastSwipeNavTime = 0;
@@ -2135,7 +2149,7 @@
       #spot-overlay, #spot-overlay * { -webkit-user-select:none; user-select:none; }
       #spot-overlay.spot-open { pointer-events:auto; opacity:1; }
       #spot-bg { position:fixed; inset:0; background:var(--spot-bg); transition:opacity var(--spot-anim); opacity:0; }
-      #spot-shell { position:fixed; inset:0; pointer-events:none; opacity:0; transform:scale(0.996); transition:opacity var(--spot-anim), transform var(--spot-anim); }
+      #spot-shell { position:fixed; inset:0; pointer-events:none; opacity:0; transform:scale(0.9); transition:opacity var(--spot-anim), transform var(--spot-anim); }
       #spot-overlay.spot-open #spot-shell { opacity:1; transform:scale(1); }
       #spot-overlay.spot-open #spot-bg { opacity:1; }
       #spot-stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:2147483645; }
