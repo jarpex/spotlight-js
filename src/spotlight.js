@@ -10,38 +10,44 @@
 (() => {
   'use strict';
 
-  // Constants
+  // ============================================================================
+  // CONSTANTS
+  // ============================================================================
+  // All magic numbers and configuration values are centralized here for
+  // maintainability. Grouped by functional area.
 
-  // Event Handling
+  // --- Event Handling ---
   const EVENT_PREFIX_LENGTH = 2; // Length of 'on' prefix for event handlers
 
-  // ID Generation
+  // --- ID Generation ---
   const ID_BASE = 36; // Base for random ID generation
   const ID_SLICE_START = 2; // Start index for random ID slicing
   const ID_SLICE_END = 9; // End index for random ID slicing
 
-  // Zoom & Scale
+  // --- Zoom & Scale ---
   const ZOOM_FACTOR = 1.2; // Factor to zoom in/out by
   const MAX_SCALE = 8; // Maximum zoom scale
   const MIN_SCALE = 0.2; // Minimum zoom scale
   const MIN_SCALE_FIT = 0.05; // Minimum scale when fitting to viewport
   const PERCENTAGE = 100; // Multiplier for percentage display
   const CENTER_OFFSET = 0.5; // Center offset for zoom calculation (0.5 = center)
+  const TRACKPAD_PINCH_SENSITIVITY = 0.01; // Base sensitivity for trackpad pinch zoom
 
-  // Pinch Gesture
+  // --- Pinch Gesture ---
   const POINTERS_COUNT = 2; // Number of pointers for pinch gesture
   const PINCH_MODERATION = 1; // Moderation factor for pinch zoom sensitivity
   const PINCH_SENSITIVITY_TOUCH = 1.1; // Sensitivity for touch devices
 
-  // Pan & Swipe (Touch)
+  // --- Pan & Swipe (Touch) ---
   const PAN_THRESHOLD = 0.1; // Threshold for panning vs zooming on touch
   const SWIPE_TIMEOUT = 500; // Max time for a swipe gesture (ms)
   const SWIPE_SCALE_THRESHOLD = 0.25; // Max scale deviation to allow swipe navigation
   const SWIPE_THRESHOLD_PX = 20; // Minimum pixel distance for a swipe
   const SWIPE_DOWN_THRESHOLD = 100; // Pixels to drag down to close
   const SWIPE_CLOSE_DIVISOR = 150; // Divisor for swipe-to-close animation progress
+  const MIN_VISIBLE_RATIO = 0.05; // Min visible fraction when panning image
 
-  // Wheel Interaction
+  // --- Wheel Interaction ---
   const SWIPE_DEBOUNCE = 500; // Debounce time for rapid swipes (ms)
   const WHEEL_RATIO_THRESHOLD = 0.65; // Ratio of X to Y delta for horizontal swipe detection
   const WHEEL_Y_THRESHOLD = 10; // Max Y delta for horizontal swipe detection
@@ -50,28 +56,63 @@
   const MOUSE_WHEEL_NAV_THRESHOLD = 2; // Minimum deltaY to trigger mouse wheel navigation
   const WHEEL_ACCELERATION_THRESHOLD = 5; // Threshold for wheel acceleration detection
   const UNLOCK_WHEEL_GAP = 150; // Time gap to unlock wheel mode
+  const TRACKPAD_SWIPE_THRESHOLD = 20; // Pixel threshold for trackpad horizontal swipe
+  const DELTA_THRESHOLD_MIN = 1; // Minimum delta to consider gesture started
+  const DELTA_DIFF_THRESHOLD = 1; // Minimum delta difference for horizontal detection
 
-  // WheelEvent mode constant (DOM_DELTA_PIXEL)
+  // --- WheelEvent Constants ---
   const DOM_DELTA_PIXEL = 0; // WheelEvent.DOM_DELTA_PIXEL
 
-  // Input & Calibration
+  // --- Input & Calibration ---
   const INPUT_DETECTION_DELAY = 400; // Delay for input detection (ms)
   const CALIBRATION_COOLDOWN = 800; // Cooldown after calibration (ms)
   const CALIBRATION_CLOSE_DELAY = 300; // Delay to close calibration (ms)
+  const CALIBRATION_TARGET = 80; // Target accumulator value for calibration step
 
-  // Animation & UI
+  // --- Animation & UI ---
   const ANIMATION_DURATION = 300; // Duration of open/close animations (ms)
   const SLIDE_OFFSET = 60; // Pixel offset for slide animation
+  const SLIDE_IN_DURATION = 650; // Duration of slide-in animation (ms)
+  const SLIDE_IN_OPACITY_DURATION = 400; // Duration of slide-in opacity transition (ms)
+  const SLIDE_SCALE_INITIAL = 0.96; // Initial scale for slide-in animation
   const CLOSE_DELAY = 220; // Delay before removing overlay from DOM after close (ms)
+  const UI_HIDE_DELAY = 1500; // Delay before hiding UI after inactivity (ms)
+
+  // --- Render Loop ---
   const CONVERGENCE_SCALE = 0.001; // Convergence threshold for scale animation
   const CONVERGENCE_TRANSLATE = 0.1; // Convergence threshold for translate animation
   const CURSOR_SCALE_THRESHOLD = 0.02; // Threshold for changing cursor to grab
+  const LERP_DECAY = 15; // Time-based lerp decay factor (higher = snappier)
+  const MAX_FRAME_DT = 60; // Max frame delta time to prevent jumps (ms)
+  const MS_PER_SECOND = 1000; // Milliseconds per second
 
+  // --- Storage Keys ---
   const LS_KEY_NATURAL = 'spotlight-natural-scrolling';
-  const ANNOUNCE_CLEAR_DELAY = 1000; // Delay to clear live announcements (ms)
 
-  // Utility
+  // --- Accessibility ---
+  const ANNOUNCE_CLEAR_DELAY = 1000; // Delay to clear live announcements (ms)
+  const COMPLETION_ANNOUNCE_OFFSET = 200; // Additional delay for completion message
+
+  // ============================================================================
+  // UTILITY FUNCTIONS
+  // ============================================================================
+
+  /**
+   * Query selector shorthand that returns an array of elements.
+   * @param {string} sel - CSS selector
+   * @param {Element|Document} root - Root element to search from
+   * @returns {Element[]} Array of matching elements
+   */
   const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+
+  /**
+   * Creates a DOM element with the specified attributes and children.
+   * Supports special handling for 'style', 'on*' event handlers, and 'dataset'.
+   * @param {string} tag - HTML tag name
+   * @param {Object} attrs - Attributes to set on the element
+   * @param {Array<string|Element>} children - Child nodes to append
+   * @returns {Element} The created element
+   */
   const create = (tag, attrs = {}, children = []) => {
     const el = document.createElement(tag);
     Object.entries(attrs).forEach(([k, v]) => {
@@ -93,7 +134,10 @@
     return el;
   };
 
-  // SVG icons used for the fullscreen toggle
+  // ============================================================================
+  // SVG ICONS
+  // ============================================================================
+
   const SVG_MAXIMIZE = `
   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-arrows-maximize"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M16 4l4 0l0 4" /><path d="M14 10l6 -6" /><path d="M8 20l-4 0l0 -4" /><path d="M4 20l6 -6" /><path d="M16 20l4 0l0 -4" /><path d="M14 14l6 6" /><path d="M8 4l-4 0l0 4" /><path d="M4 4l6 6" /></svg>
   `;
@@ -102,8 +146,28 @@
   <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-arrows-minimize"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M5 9l4 0l0 -4" /><path d="M3 3l6 6" /><path d="M5 15l4 0l0 4" /><path d="M3 21l6 -6" /><path d="M19 9l-4 0l0 -4" /><path d="M15 9l6 -6" /><path d="M19 15l-4 0l0 4" /><path d="M15 15l6 6" /></svg>
   `;
 
-  // Main
+  // ============================================================================
+  // SPOTLIGHT CLASS
+  // ============================================================================
+
+  /**
+   * Spotlight - A lightweight, dependency-free image gallery viewer.
+   *
+   * Features:
+   * - Automatic collection detection from <article> and .gallery containers
+   * - Smooth animations with time-based interpolation
+   * - Touch, mouse, and trackpad gesture support
+   * - Pinch-to-zoom and pan functionality
+   * - Keyboard navigation and accessibility support
+   * - Fullscreen mode
+   *
+   * @class
+   */
   class Spotlight {
+    /**
+     * Creates a new Spotlight instance.
+     * Initializes state, detects input methods, injects styles, and creates the overlay.
+     */
     constructor() {
       this.collections = []; // {id, container, items: [{src, el}], title?}
       this.overlay = null;
@@ -125,7 +189,7 @@
         translateY: 0,
       };
       this._uiHideTimer = null;
-      this._uiHideDelay = 1500;
+      this._uiHideDelay = UI_HIDE_DELAY;
       this._wheelSwipeAccum = 0;
       this._wheelSwipeTimer = null;
       this._wheelMode = null; // 'swipe' | 'zoom'
@@ -469,8 +533,10 @@
       // Accumulate deltaY
       this.calibrationAccum = (this.calibrationAccum || 0) + e.deltaY;
 
-      const TARGET = 80;
-      const progress = Math.min(Math.abs(this.calibrationAccum) / TARGET, 1);
+      const progress = Math.min(
+        Math.abs(this.calibrationAccum) / CALIBRATION_TARGET,
+        1
+      );
 
       this._setCalibrationProgress(progress);
     }
@@ -529,47 +595,54 @@
       // Announce completion
       if (this.liveRegion) {
         this.liveRegion.textContent = 'Trackpad calibration complete.';
-        const COMPLETION_ANNOUNCE_CLEAR_OFFSET = 200; // small additional delay for completion message
         setTimeout(() => {
           this.liveRegion.textContent = '';
-        }, ANNOUNCE_CLEAR_DELAY + COMPLETION_ANNOUNCE_CLEAR_OFFSET);
+        }, ANNOUNCE_CLEAR_DELAY + COMPLETION_ANNOUNCE_OFFSET);
       }
       // Close calibration
       this.nodes.calibration.classList.remove('visible');
       setTimeout(() => {
-        if (this.nodes.calibration) {
-          this.nodes.calibration.remove();
-          this.nodes.calibration = null;
-          this.nodes.calibrationProgress = null;
-          this.nodes.calibrationText = null;
-          // Cleanup focus trap/keyboard handlers
-          if (this._calibrationKeydownHandler) {
-            try {
-              if (
-                this.nodes &&
-                this.nodes.calibration &&
-                typeof this.nodes.calibration.removeEventListener === 'function'
-              ) {
-                this.nodes.calibration.removeEventListener(
-                  'keydown',
-                  this._calibrationKeydownHandler
-                );
-              } else {
-                document.removeEventListener(
-                  'keydown',
-                  this._calibrationKeydownHandler
-                );
-              }
-            } catch {
-              // Prevent errors during cleanup from bubbling up
-            }
-            this._calibrationKeydownHandler = null;
-          }
-          this._calibrationFocusable = null;
-        }
+        this._cleanupCalibrationHandlers();
+        this._removeCalibrationNodes();
         this.calibrationActive = false;
         this.calibrationSource = null;
       }, CALIBRATION_CLOSE_DELAY);
+    }
+
+    /**
+     * Removes calibration-related event handlers.
+     * Extracted to avoid code duplication between _setCalibrationProgress and _closeCalibration.
+     */
+    _cleanupCalibrationHandlers() {
+      if (this._calibrationKeydownHandler) {
+        try {
+          const target =
+            this.nodes?.calibration &&
+            typeof this.nodes.calibration.removeEventListener === 'function'
+              ? this.nodes.calibration
+              : document;
+          target.removeEventListener(
+            'keydown',
+            this._calibrationKeydownHandler
+          );
+        } catch {
+          // Swallow cleanup errors
+        }
+        this._calibrationKeydownHandler = null;
+      }
+      this._calibrationFocusable = null;
+    }
+
+    /**
+     * Removes calibration DOM nodes and resets related state.
+     */
+    _removeCalibrationNodes() {
+      if (this.nodes.calibration) {
+        this.nodes.calibration.remove();
+        this.nodes.calibration = null;
+        this.nodes.calibrationProgress = null;
+        this.nodes.calibrationText = null;
+      }
     }
 
     _handleCalibrationKeydown(ev) {
@@ -608,29 +681,7 @@
         return;
       }
       this.nodes.calibration.classList.remove('visible');
-      if (this._calibrationKeydownHandler) {
-        try {
-          if (
-            this.nodes &&
-            this.nodes.calibration &&
-            typeof this.nodes.calibration.removeEventListener === 'function'
-          ) {
-            this.nodes.calibration.removeEventListener(
-              'keydown',
-              this._calibrationKeydownHandler
-            );
-          } else {
-            document.removeEventListener(
-              'keydown',
-              this._calibrationKeydownHandler
-            );
-          }
-        } catch {
-          // swallow cleanup errors
-        }
-        this._calibrationKeydownHandler = null;
-      }
-      this._calibrationFocusable = null;
+      this._cleanupCalibrationHandlers();
       this.calibrationActive = false;
       this.calibrationSource = null;
       if (this._pendingCalibrationListener) {
@@ -638,12 +689,7 @@
         this._pendingCalibrationListener = null;
       }
       setTimeout(() => {
-        if (this.nodes.calibration) {
-          this.nodes.calibration.remove();
-          this.nodes.calibration = null;
-          this.nodes.calibrationProgress = null;
-          this.nodes.calibrationText = null;
-        }
+        this._removeCalibrationNodes();
         if (
           this._lastFocusedBeforeCalibration &&
           typeof this._lastFocusedBeforeCalibration.focus === 'function'
@@ -1195,9 +1241,8 @@
       this._scheduleWheelGestureReset();
     }
 
-    _commitSwipeNavigation(direction) {
-      const now = Date.now();
-      this._lastSwipeNavTime = now;
+    _commitSwipeNavigation() {
+      this._lastSwipeNavTime = Date.now();
       this._wheelSwipeAccum = 0;
       // Lock mode to 'zoom' to prevent inertia from re-triggering
       this._wheelMode = 'zoom';
@@ -1218,15 +1263,12 @@
         dx = -dx;
       }
 
-      const threshold = 20; // tuned for macOS trackpads
-      // Removed zoom level check to allow swipe navigation at any zoom level
-
       this._wheelSwipeAccum += dx;
-      if (this._wheelSwipeAccum > threshold) {
-        this._commitSwipeNavigation(1);
+      if (this._wheelSwipeAccum > TRACKPAD_SWIPE_THRESHOLD) {
+        this._commitSwipeNavigation();
         this.next();
-      } else if (this._wheelSwipeAccum < -threshold) {
-        this._commitSwipeNavigation(-1);
+      } else if (this._wheelSwipeAccum < -TRACKPAD_SWIPE_THRESHOLD) {
+        this._commitSwipeNavigation();
         this.prev();
       }
     }
@@ -1269,12 +1311,13 @@
       const absY = Math.abs(event.deltaY);
 
       // If both deltas are very small, don't lock mode yet
-      if (absX < 1 && absY < 1) {
+      if (absX < DELTA_THRESHOLD_MIN && absY < DELTA_THRESHOLD_MIN) {
         return 'zoom'; // Default to zoom/vertical logic for now
       }
 
       const horizontal =
-        (absX > absY * WHEEL_RATIO_THRESHOLD && absX - absY > 1) ||
+        (absX > absY * WHEEL_RATIO_THRESHOLD &&
+          absX - absY > DELTA_DIFF_THRESHOLD) ||
         (absY < WHEEL_Y_THRESHOLD && absX > WHEEL_Y_THRESHOLD); // Only treat as horizontal if X is significant
 
       if (horizontal) {
@@ -1299,10 +1342,8 @@
       // Trackpad pinch (ctrlKey)
       if (event.ctrlKey) {
         const delta = -event.deltaY;
-        // Base sensitivity for trackpad pinch (pixels to scale)
-        const TRACKPAD_BASE_SENSITIVITY = 0.01;
         const effectiveSensitivity =
-          TRACKPAD_BASE_SENSITIVITY * PINCH_MODERATION;
+          TRACKPAD_PINCH_SENSITIVITY * PINCH_MODERATION;
         const factor = 1 + delta * effectiveSensitivity;
         this._zoomAtPoint(factor, event.clientX, event.clientY);
         return;
@@ -1479,15 +1520,14 @@
       const dir = direction || 0;
       img.style.transition = 'none';
       if (dir) {
-        img.style.transform = `translateX(${dir * SLIDE_OFFSET}px) scale(0.96)`;
+        img.style.transform = `translateX(${dir * SLIDE_OFFSET}px) scale(${SLIDE_SCALE_INITIAL})`;
         img.style.opacity = '0';
       } else {
         img.style.transform = 'translateX(0) scale(1)';
         img.style.opacity = '1';
       }
       requestAnimationFrame(() => {
-        img.style.transition =
-          'transform 650ms cubic-bezier(0.3, 1, 0.3, 1), opacity 400ms ease';
+        img.style.transition = `transform ${SLIDE_IN_DURATION}ms cubic-bezier(0.3, 1, 0.3, 1), opacity ${SLIDE_IN_OPACITY_DURATION}ms ease`;
         img.style.transform = 'translateX(0) scale(1)';
         img.style.opacity = '1';
         const cleanup = () => {
@@ -1568,7 +1608,11 @@
       window.addEventListener('pointercancel', onPointerUp);
     }
 
-    // Open a collection by index, show item index
+    /**
+     * Opens a collection in the spotlight viewer.
+     * @param {number} collectionIndex - Index of the collection to open
+     * @param {number} [itemIndex=0] - Index of the item within the collection
+     */
     openCollection(collectionIndex, itemIndex = 0) {
       if (!this.collections[collectionIndex]) {
         return;
@@ -1604,6 +1648,10 @@
       });
     }
 
+    /**
+     * Closes the spotlight viewer and restores the page state.
+     * Handles cleanup of animations, timers, and calibration UI.
+     */
     close() {
       if (!this.state.open) {
         return;
@@ -1632,14 +1680,10 @@
         this._pendingCalibrationListener = null;
       }
       if (this.calibrationActive && this.nodes.calibration) {
-        this.nodes.calibration.remove();
-        this.nodes.calibration = null;
-        this.nodes.calibrationProgress = null;
-        this.nodes.calibrationText = null;
+        this._removeCalibrationNodes();
         this.calibrationActive = false;
         this.calibrationSource = null;
       }
-
       // small delay to allow animation
       setTimeout(() => {
         if (!this.state.open) {
@@ -1651,26 +1695,28 @@
       }, CLOSE_DELAY);
     }
 
+    /**
+     * Navigates to the previous image in the current collection.
+     */
     prev() {
       const c = this.collections[this.state.collectionIndex];
-      if (!c) {
+      if (!c || this.state.itemIndex <= 0) {
         return;
       }
-      if (this.state.itemIndex > 0) {
-        this.state.itemIndex--;
-        this._animateSlide(-1, () => this._loadItem());
-      }
+      this.state.itemIndex--;
+      this._animateSlide(-1, () => this._loadItem());
     }
 
+    /**
+     * Navigates to the next image in the current collection.
+     */
     next() {
       const c = this.collections[this.state.collectionIndex];
-      if (!c) {
+      if (!c || this.state.itemIndex >= c.items.length - 1) {
         return;
       }
-      if (this.state.itemIndex < c.items.length - 1) {
-        this.state.itemIndex++;
-        this._animateSlide(1, () => this._loadItem());
-      }
+      this.state.itemIndex++;
+      this._animateSlide(1, () => this._loadItem());
     }
 
     _updateNavVisibility() {
@@ -1786,25 +1832,29 @@
       this.renderState.translateX = 0;
       this.renderState.translateY = 0;
       this._renderActive = false;
-      if (this.nodes.bg) {
-        this.nodes.bg.style.opacity = '';
-      }
-      if (this.nodes.ui) {
-        this.nodes.ui.style.opacity = '';
-      }
-      if (this.nodes.prevBtn) {
-        this.nodes.prevBtn.style.opacity = '';
-      }
-      if (this.nodes.nextBtn) {
-        this.nodes.nextBtn.style.opacity = '';
-      }
-      if (this.nodes.imgNode) {
-        this.nodes.imgNode.style.opacity = '';
-      }
+      this._resetNodeOpacities();
       if (this._rafId) {
         cancelAnimationFrame(this._rafId);
         this._rafId = null;
       }
+    }
+
+    /**
+     * Resets opacity on all fadeable UI nodes to their default CSS values.
+     */
+    _resetNodeOpacities() {
+      const nodes = [
+        this.nodes.bg,
+        this.nodes.ui,
+        this.nodes.prevBtn,
+        this.nodes.nextBtn,
+        this.nodes.imgNode,
+      ];
+      nodes.forEach((node) => {
+        if (node) {
+          node.style.opacity = '';
+        }
+      });
     }
 
     _startRenderLoop() {
@@ -1823,19 +1873,17 @@
       }
 
       const now = Date.now();
-      const MAX_DT = 60;
-      const MS_PER_SEC = 1000;
       const dt =
-        Math.min(now - (this._lastRenderTime || now), MAX_DT) / MS_PER_SEC;
+        Math.min(now - (this._lastRenderTime || now), MAX_FRAME_DT) /
+        MS_PER_SECOND;
       this._lastRenderTime = now;
 
       const { scale, translateX, translateY } = this.state;
       const rs = this.renderState;
 
       // Time-based lerp: 1 - exp(-decay * dt)
-      // Decay 15 is snappy, 10 is smoother
-      const decay = 15;
-      const f = 1 - Math.exp(-decay * dt);
+      // Higher decay = snappier animation, lower = smoother
+      const f = 1 - Math.exp(-LERP_DECAY * dt);
 
       rs.scale += (scale - rs.scale) * f;
       rs.translateX += (translateX - rs.translateX) * f;
@@ -1878,14 +1926,6 @@
       // Allow animation if: zoomed out OR it's a trackpad-initiated swipe
       const allowAnimation = isZoomedOut || this._trackpadSwipeToClose;
 
-      const nodesToFade = [
-        this.nodes.bg,
-        this.nodes.ui,
-        this.nodes.prevBtn,
-        this.nodes.nextBtn,
-        this.nodes.imgNode,
-      ];
-
       if (
         translateY > 0 &&
         this.state.open &&
@@ -1896,20 +1936,30 @@
           1,
           Math.abs(translateY) / SWIPE_CLOSE_DIVISOR
         );
-        const opacity = 1 - progress;
-
-        nodesToFade.forEach((node) => {
-          if (node) {
-            node.style.opacity = String(opacity);
-          }
-        });
+        this._setNodeOpacities(1 - progress);
       } else {
-        nodesToFade.forEach((node) => {
-          if (node) {
-            node.style.opacity = '';
-          }
-        });
+        this._resetNodeOpacities();
       }
+    }
+
+    /**
+     * Sets opacity on all fadeable UI nodes.
+     * @param {number} opacity - Value between 0 and 1
+     */
+    _setNodeOpacities(opacity) {
+      const opacityStr = String(opacity);
+      const nodes = [
+        this.nodes.bg,
+        this.nodes.ui,
+        this.nodes.prevBtn,
+        this.nodes.nextBtn,
+        this.nodes.imgNode,
+      ];
+      nodes.forEach((node) => {
+        if (node) {
+          node.style.opacity = opacityStr;
+        }
+      });
     }
 
     _checkConvergence(scale, translateX, translateY, rs) {
@@ -2006,16 +2056,22 @@
       this.nodes.zoomDisplay.title = `Reset zoom (${pct}%)`;
     }
 
+    /**
+     * Zooms the image by a given factor, centered on the viewport.
+     * @param {number} factor - Zoom multiplier (>1 zooms in, <1 zooms out)
+     */
     _zoomBy(factor) {
       this._handleUserActivity();
       this.state.scale = Math.min(
         MAX_SCALE,
         Math.max(MIN_SCALE, this.state.scale * factor)
       );
-      // adjust translate to keep center (approx)
       this._startRenderLoop();
     }
 
+    /**
+     * Resets the zoom to the base scale and centers the image.
+     */
     _resetZoom() {
       this._handleUserActivity();
       this.state.scale = this.state.baseScale || 1;
@@ -2024,22 +2080,22 @@
       this._startRenderLoop();
     }
 
+    /**
+     * Constrains the image translation to keep at least MIN_VISIBLE_RATIO visible.
+     * Prevents the image from being panned completely out of view.
+     */
     _constrainAndSync() {
       const { naturalWidth, naturalHeight } = this.nodes.imgNode;
       const { clientWidth, clientHeight } = this.nodes.canvas;
       const currentW = naturalWidth * this.state.scale;
       const currentH = naturalHeight * this.state.scale;
 
-      // Allow moving the image until only a small fraction (e.g. 5%) is visible
-      // This prevents hard snapping when the image fits the viewport and allows
-      // the user to move the image freely to inspect corners/background.
-      const minVisibleRatio = 0.05;
       const limitX =
         clientWidth * CENTER_OFFSET +
-        currentW * (CENTER_OFFSET - minVisibleRatio);
+        currentW * (CENTER_OFFSET - MIN_VISIBLE_RATIO);
       const limitY =
         clientHeight * CENTER_OFFSET +
-        currentH * (CENTER_OFFSET - minVisibleRatio);
+        currentH * (CENTER_OFFSET - MIN_VISIBLE_RATIO);
 
       this.state.translateX = Math.min(
         limitX,
@@ -2051,11 +2107,17 @@
       );
     }
 
+    /**
+     * Zooms the image while keeping a specific point anchored under the cursor.
+     * Used for pinch-to-zoom and scroll-wheel zoom gestures.
+     * @param {number} factor - Zoom multiplier
+     * @param {number} clientX - X coordinate of the anchor point
+     * @param {number} clientY - Y coordinate of the anchor point
+     */
     _zoomAtPoint(factor, clientX, clientY) {
       this._handleUserActivity();
       this._swipeIntent = false;
       this._trackpadSwipeToClose = false;
-      // Zoom keeping pointer anchored
       const rect = (
         this.nodes.transform || this.nodes.imgNode
       ).getBoundingClientRect();
