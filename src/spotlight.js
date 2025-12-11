@@ -42,8 +42,6 @@
   const SWIPE_CLOSE_DIVISOR = 150; // Divisor for swipe-to-close animation progress
 
   // Wheel Interaction
-  const WHEEL_SCALE_THRESHOLD_NEAR = 0.8; // Threshold for "near base scale" check
-  const WHEEL_SCALE_THRESHOLD_FACTOR = 0.5; // Factor of base scale for threshold
   const SWIPE_DEBOUNCE = 500; // Debounce time for rapid swipes (ms)
   const WHEEL_RATIO_THRESHOLD = 0.65; // Ratio of X to Y delta for horizontal swipe detection
   const WHEEL_Y_THRESHOLD = 10; // Max Y delta for horizontal swipe detection
@@ -1219,16 +1217,7 @@
       }
 
       const threshold = 20; // tuned for macOS trackpads
-      const base = this.state.baseScale || 1;
-      if (
-        Math.abs(this.state.scale - base) >
-        Math.max(
-          WHEEL_SCALE_THRESHOLD_NEAR,
-          base * WHEEL_SCALE_THRESHOLD_FACTOR
-        )
-      ) {
-        return;
-      }
+      // Removed zoom level check to allow swipe navigation at any zoom level
 
       this._wheelSwipeAccum += dx;
       if (this._wheelSwipeAccum > threshold) {
@@ -1276,13 +1265,6 @@
       }
       const absX = Math.abs(event.deltaX);
       const absY = Math.abs(event.deltaY);
-      const base = this.state.baseScale || 1;
-      const nearBase =
-        Math.abs(this.state.scale - base) <=
-        Math.max(
-          WHEEL_SCALE_THRESHOLD_NEAR,
-          base * WHEEL_SCALE_THRESHOLD_FACTOR
-        );
 
       // If both deltas are very small, don't lock mode yet
       if (absX < 1 && absY < 1) {
@@ -1293,7 +1275,7 @@
         (absX > absY * WHEEL_RATIO_THRESHOLD && absX - absY > 1) ||
         (absY < WHEEL_Y_THRESHOLD && absX > WHEEL_Y_THRESHOLD); // Only treat as horizontal if X is significant
 
-      if (nearBase && horizontal) {
+      if (horizontal) {
         this._wheelMode = 'swipe';
       } else if (absY > absX) {
         // Clearly vertical
