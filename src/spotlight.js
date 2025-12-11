@@ -1660,9 +1660,10 @@
       if (!c) {
         return;
       }
-      this.state.itemIndex =
-        (this.state.itemIndex - 1 + c.items.length) % c.items.length;
-      this._animateSlide(-1, () => this._loadItem());
+      if (this.state.itemIndex > 0) {
+        this.state.itemIndex--;
+        this._animateSlide(-1, () => this._loadItem());
+      }
     }
 
     next() {
@@ -1670,8 +1671,26 @@
       if (!c) {
         return;
       }
-      this.state.itemIndex = (this.state.itemIndex + 1) % c.items.length;
-      this._animateSlide(1, () => this._loadItem());
+      if (this.state.itemIndex < c.items.length - 1) {
+        this.state.itemIndex++;
+        this._animateSlide(1, () => this._loadItem());
+      }
+    }
+
+    _updateNavVisibility() {
+      const c = this.collections[this.state.collectionIndex];
+      if (!c) {
+        return;
+      }
+      const count = c.items.length;
+      const index = this.state.itemIndex;
+
+      if (this.nodes.prevBtn) {
+        this.nodes.prevBtn.style.display = index > 0 ? '' : 'none';
+      }
+      if (this.nodes.nextBtn) {
+        this.nodes.nextBtn.style.display = index < count - 1 ? '' : 'none';
+      }
     }
 
     _loadItem() {
@@ -1690,6 +1709,7 @@
       this._pendingSlideDir = 0;
 
       this._resetRenderState();
+      this._updateNavVisibility();
 
       // show spinner while loading
       this.nodes.imgNode.style.opacity = '0';
@@ -1935,18 +1955,8 @@
 
       if (viewportLandscape) {
         // Desktop / Landscape
-        // If image fits in at least one dimension at 100%, use 100%.
-        // Otherwise (too big in both), scale to fit the shortest viewport side (Height).
-        const fitsWidth = intrinsicWidth <= vw;
-        const fitsHeight = intrinsicHeight <= vh;
-
-        if (fitsWidth || fitsHeight) {
-          baseScale = 1;
-        } else {
-          baseScale = scaleH; // Shortest side in landscape is Height
-        }
-        // Cap at 1.0
-        baseScale = Math.min(baseScale, 1);
+        // Use Contain logic (fit fully inside), but cap at 1.0 to avoid upscaling small images by default.
+        baseScale = Math.min(scaleW, scaleH, 1);
       } else {
         // Mobile / Portrait
         // Use Contain logic (fit fully inside), but allow upscaling for small images.
