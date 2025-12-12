@@ -1,6 +1,6 @@
 {
   "name": "spotlight-js",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Spotlight JS is a tiny, dependency-free image viewer that instantly turns images on any webpage into a polished full-screen gallery. It provides smooth animations, trackpad gestures, touch, keyboard shortcuts and fullscreen support — all wired up automatically with zero configuration.",
   "main": "index.js",
   "scripts": {
