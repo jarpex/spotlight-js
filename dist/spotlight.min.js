@@ -1,5 +1,5 @@
 /*!
- * Spotlight JS v1.0.2
+ * Spotlight JS v1.0.3
  * Copyright (c) 2025 Anastasia Shebalkina
  * Licensed under the MIT License (see LICENSE)
  *

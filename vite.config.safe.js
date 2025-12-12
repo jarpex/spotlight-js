@@ -150,7 +150,9 @@ function spotlightOptimizer() {
             `dist/\x1b[36m${fileName}\x1b[0m  ` +
               `\x1b[38;5;15m${size(buf.length)} │ gzip: \x1b[1;30m${size(gz(buf))} \x1b[0m\x1b[38;5;15m│ \x1b[38;5;15mbrotli: \x1b[1;30m${size(br(buf))}\x1b[0m`
           );
-        } catch {}
+        } catch (err) {
+          console.error('Error reporting bundle sizes:', err);
+        }
       });
     },
   };

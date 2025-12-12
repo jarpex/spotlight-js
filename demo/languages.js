@@ -818,7 +818,7 @@ const TRANSLATIONS = {
       'И&nbsp;всё! Spotlight JS&nbsp;теперь доступен на&nbsp;вашем сайте и&nbsp;уже показывает изображения.',
     gallery_mode: 'Работа в&nbsp;режиме галереи',
     gallery_text:
-      'Самый простой способ объеденить изображения в&nbsp;галерею&nbsp;&mdash; обернуть картинки в&nbsp;блок с&nbsp;классом <code>.gallery</code>, и&nbsp;Spotlight начнёт их&nbsp;отображать как единую коллекцию.',
+      'Самый простой способ объединить изображения в&nbsp;галерею&nbsp;&mdash; обернуть картинки в&nbsp;блок с&nbsp;классом <code>.gallery</code>, и&nbsp;Spotlight начнёт их&nbsp;отображать как единую коллекцию.',
     article_mode: 'Работа в&nbsp;режиме статьи',
     article_text:
       'Если ваш сайт содержит статьи, работать со&nbsp;Spotlight JS&nbsp;становится ещё проще! Spotlight сам найдёт картинки внутри тэга <code>&lt;article&gt;</code> и&nbsp;подтянет подписи из <code>figcaption</code> или <code>alt</code>. Все картинки из&nbsp;статьи будут сгруппированы в&nbsp;единую галерею.',
