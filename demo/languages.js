@@ -105,7 +105,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Cross button',
     act_swipe_down: 'Swipe Down',
     act_2_swipe_down: 'Two fingers swipe down',
-    footer: '&copy; 2025 Anastasia Shebalkina. Licensed under MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Licensed under MIT.',
   },
   es: {
     subtitle:
@@ -175,7 +175,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Botón de cerrar',
     act_swipe_down: 'Deslizar abajo',
     act_2_swipe_down: 'Dos dedos abajo',
-    footer: '&copy; 2025 Anastasia Shebalkina. Licencia MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Licencia MIT.',
   },
   fr: {
     subtitle:
@@ -246,7 +246,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Bouton fermer',
     act_swipe_down: 'Balayage vers le bas',
     act_2_swipe_down: 'Deux doigts vers le bas',
-    footer: '&copy; 2025 Anastasia Shebalkina. Sous licence MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Sous licence MIT.',
   },
   ar: {
     subtitle: 'معرض صور خفيف الوزن، خالٍ من التبعيات، ومصمم للويب الحديث.',
@@ -315,7 +315,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'زر الإغلاق',
     act_swipe_down: 'سحب للأسفل',
     act_2_swipe_down: 'سحب بإصبعين للأسفل',
-    footer: '&copy; 2025 Anastasia Shebalkina. مرخص تحت MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. مرخص تحت MIT.',
   },
   bn: {
     subtitle:
@@ -386,7 +386,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'বন্ধ করার বাটন',
     act_swipe_down: 'নিচে সোয়াইপ',
     act_2_swipe_down: 'দুই আঙুলে নিচে সোয়াইপ',
-    footer: '&copy; 2025 আনাস্তাসিয়া শেবালকিনা। MIT লাইসেন্সের অধীনে।',
+    footer: '&copy; 2026 আনাস্তাসিয়া শেবালকিনা। MIT লাইসেন্সের অধীনে।',
   },
   pt: {
     subtitle:
@@ -456,7 +456,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Botão fechar',
     act_swipe_down: 'Deslizar para baixo',
     act_2_swipe_down: 'Dois dedos para baixo',
-    footer: '&copy; 2025 Anastasia Shebalkina. Licença MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Licença MIT.',
   },
   ur: {
     subtitle:
@@ -527,7 +527,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'بند کرنے کا بٹن',
     act_swipe_down: 'نیچے سوائپ کریں',
     act_2_swipe_down: 'دو انگلیوں سے نیچے سوائپ',
-    footer: '&copy; 2025 Anastasia Shebalkina. MIT لائسنس کے تحت۔',
+    footer: '&copy; 2026 Anastasia Shebalkina. MIT لائسنس کے تحت۔',
   },
   id: {
     subtitle:
@@ -598,7 +598,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Tombol Tutup',
     act_swipe_down: 'Geser Bawah',
     act_2_swipe_down: 'Dua Jari Bawah',
-    footer: '&copy; 2025 Anastasia Shebalkina. Lisensi MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Lisensi MIT.',
   },
   de: {
     subtitle:
@@ -669,7 +669,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Button „Schließen“',
     act_swipe_down: 'Nach unten wischen',
     act_2_swipe_down: 'Zwei Finger nach unten',
-    footer: '&copy; 2025 Anastasia Shebalkina. MIT-Lizenz.',
+    footer: '&copy; 2026 Anastasia Shebalkina. MIT-Lizenz.',
   },
   zh: {
     subtitle: '专为现代 Web 打造的轻量级、零依赖 Lightbox 画廊。',
@@ -732,7 +732,7 @@ const TRANSLATIONS = {
     act_cross_btn: '“关闭”按钮',
     act_swipe_down: '下滑',
     act_2_swipe_down: '双指下滑',
-    footer: '&copy; 2025 Anastasia Shebalkina. 基于 MIT 协议开源。',
+    footer: '&copy; 2026 Anastasia Shebalkina. 基于 MIT 协议开源。',
   },
   hi: {
     subtitle:
@@ -803,7 +803,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'बंद करने का बटन',
     act_swipe_down: 'नीचे स्वाइप करें',
     act_2_swipe_down: 'दो उंगलियों से नीचे स्वाइप',
-    footer: '&copy; 2025 अनास्तासिया शेबालकिना। MIT लाइसेंस के तहत।',
+    footer: '&copy; 2026 अनास्तासिया शेबालकिना। MIT लाइसेंस के तहत।',
   },
   ru: {
     subtitle:
@@ -874,7 +874,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Кнопка &laquo;Закрыть&raquo;',
     act_swipe_down: 'Свайп вниз',
     act_2_swipe_down: 'Свайп двумя пальцами вниз',
-    footer: '&copy;&nbsp;2025 Анастасия Шебалкина. Лицензия MIT.',
+    footer: '&copy;&nbsp;2026 Анастасия Шебалкина. Лицензия MIT.',
   },
   ja: {
     subtitle:
@@ -945,7 +945,7 @@ const TRANSLATIONS = {
     act_cross_btn: '「閉じる」ボタン',
     act_swipe_down: '下スワイプ',
     act_2_swipe_down: '2本指で下へ',
-    footer: '&copy; 2025 Anastasia Shebalkina. MITライセンス。',
+    footer: '&copy; 2026 Anastasia Shebalkina. MITライセンス。',
   },
   pcm: {
     subtitle:
@@ -1016,7 +1016,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Close Button',
     act_swipe_down: 'Swipe Down',
     act_2_swipe_down: 'Two Fingers Down',
-    footer: '&copy; 2025 Anastasia Shebalkina. Licensed under MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Licensed under MIT.',
   },
   arz: {
     subtitle:
@@ -1084,7 +1084,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'زرار القفل',
     act_swipe_down: 'اسحب لتحت',
     act_2_swipe_down: 'صباعين لتحت',
-    footer: '&copy; 2025 Anastasia Shebalkina. مرخص تحت MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. مرخص تحت MIT.',
   },
   mr: {
     subtitle:
@@ -1155,7 +1155,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'बंद करण्याचं बटण',
     act_swipe_down: 'खाली स्वाइप',
     act_2_swipe_down: 'दोन बोटांनी खाली',
-    footer: '&copy; 2025 अनास्तासिया शेबालकिना. MIT लायसन्स अंतर्गत.',
+    footer: '&copy; 2026 अनास्तासिया शेबालकिना. MIT लायसन्स अंतर्गत.',
   },
   te: {
     subtitle:
@@ -1226,7 +1226,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'క్లోజ్ బటన్',
     act_swipe_down: 'కిందకు స్వైప్',
     act_2_swipe_down: 'రెండు వేళ్లతో కిందకు',
-    footer: '&copy; 2025 అనస్తాసియా షెబాల్కినా. MIT లైసెన్స్ కింద.',
+    footer: '&copy; 2026 అనస్తాసియా షెబాల్కినా. MIT లైసెన్స్ కింద.',
   },
   tr: {
     subtitle:
@@ -1297,7 +1297,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Kapatma Düğmesi',
     act_swipe_down: 'Aşağı Kaydır',
     act_2_swipe_down: 'İki Parmak Aşağı',
-    footer: '&copy; 2025 Anastasia Shebalkina. MIT Lisansı altında.',
+    footer: '&copy; 2026 Anastasia Shebalkina. MIT Lisansı altında.',
   },
   ta: {
     subtitle:
@@ -1368,7 +1368,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'மூடும் பட்டன்',
     act_swipe_down: 'கீழே ஸ்வைப்',
     act_2_swipe_down: 'இரண்டு விரல் கீழே',
-    footer: '&copy; 2025 அனஸ்தாசியா ஷெபால்கினா. MIT உரிமத்தின் கீழ்.',
+    footer: '&copy; 2026 அனஸ்தாசியா ஷெபால்கினா. MIT உரிமத்தின் கீழ்.',
   },
   yue: {
     subtitle: '專為現代 Web 而設，輕量級、零依賴嘅 Lightbox 畫廊。',
@@ -1433,7 +1433,7 @@ const TRANSLATIONS = {
     act_cross_btn: '關閉掣',
     act_swipe_down: '向下掃',
     act_2_swipe_down: '兩隻手指向下掃',
-    footer: '&copy; 2025 Anastasia Shebalkina. MIT License.',
+    footer: '&copy; 2026 Anastasia Shebalkina. MIT License.',
   },
   vi: {
     subtitle:
@@ -1504,7 +1504,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Nút đóng',
     act_swipe_down: 'Vuốt xuống',
     act_2_swipe_down: 'Hai ngón vuốt xuống',
-    footer: '&copy; 2025 Anastasia Shebalkina. Giấy phép MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Giấy phép MIT.',
   },
   wuu: {
     subtitle: '专门为现代 Web 打造个轻量级、零依赖 Lightbox 画廊。',
@@ -1567,7 +1567,7 @@ const TRANSLATIONS = {
     act_cross_btn: '“关闭”按钮',
     act_swipe_down: '下滑',
     act_2_swipe_down: '双指下滑',
-    footer: '&copy; 2025 Anastasia Shebalkina. 基于 MIT 协议开源。',
+    footer: '&copy; 2026 Anastasia Shebalkina. 基于 MIT 协议开源。',
   },
   tl: {
     subtitle:
@@ -1638,7 +1638,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Close Button',
     act_swipe_down: 'Swipe Down',
     act_2_swipe_down: 'Two Fingers Down',
-    footer: '&copy; 2025 Anastasia Shebalkina. Licensed under MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Licensed under MIT.',
   },
   ko: {
     subtitle: '모던 웹을 위해 탄생한 초경량, 무의존성 라이트박스 갤러리.',
@@ -1708,7 +1708,7 @@ const TRANSLATIONS = {
     act_cross_btn: '닫기 버튼',
     act_swipe_down: '아래로 스와이프',
     act_2_swipe_down: '두 손가락으로 아래',
-    footer: '&copy; 2025 Anastasia Shebalkina. MIT 라이선스.',
+    footer: '&copy; 2026 Anastasia Shebalkina. MIT 라이선스.',
   },
   fa: {
     subtitle:
@@ -1777,7 +1777,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'دکمه بستن',
     act_swipe_down: 'کشیدن به پایین',
     act_2_swipe_down: 'دو انگشت به پایین',
-    footer: '&copy; 2025 Anastasia Shebalkina. تحت مجوز MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. تحت مجوز MIT.',
   },
   it: {
     subtitle:
@@ -1848,7 +1848,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Pulsante Chiudi',
     act_swipe_down: 'Scorri Giù',
     act_2_swipe_down: 'Due Dita Giù',
-    footer: '&copy; 2025 Anastasia Shebalkina. Licenza MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Licenza MIT.',
   },
   pl: {
     subtitle:
@@ -1919,7 +1919,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Przycisk zamknij',
     act_swipe_down: 'Przesunięcie w dół',
     act_2_swipe_down: 'Dwa palce w dół',
-    footer: '&copy; 2025 Anastasia Shebalkina. Licencja MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Licencja MIT.',
   },
   nl: {
     subtitle:
@@ -1990,7 +1990,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Knop sluiten',
     act_swipe_down: 'Omlaag vegen',
     act_2_swipe_down: 'Twee vingers omlaag',
-    footer: '&copy; 2025 Anastasia Shebalkina. Gelicenseerd onder MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Gelicenseerd onder MIT.',
   },
   he: {
     subtitle:
@@ -2055,7 +2055,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'כפתור סגירה',
     act_swipe_down: 'החלקה למטה',
     act_2_swipe_down: 'שתי אצבעות למטה',
-    footer: '&copy; 2025 Anastasia Shebalkina. תחת רישיון MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. תחת רישיון MIT.',
   },
   uk: {
     subtitle:
@@ -2126,7 +2126,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Кнопка закриття',
     act_swipe_down: 'Свайп вниз',
     act_2_swipe_down: 'Два пальці вниз',
-    footer: '&copy; 2025 Anastasia Shebalkina. Ліцензія MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Ліцензія MIT.',
   },
   sw: {
     subtitle:
@@ -2197,7 +2197,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Kitufe cha Kufunga',
     act_swipe_down: 'Pangusa Chini',
     act_2_swipe_down: 'Vidole Viwili Chini',
-    footer: '&copy; 2025 Anastasia Shebalkina. Leseni ya MIT.',
+    footer: '&copy; 2026 Anastasia Shebalkina. Leseni ya MIT.',
   },
   hy: {
     subtitle:
@@ -2267,7 +2267,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Փակման կոճակ',
     act_swipe_down: 'Սահեցնել ներքև',
     act_2_swipe_down: 'Երկու մատով ներքև',
-    footer: '&copy; 2025 Anastasia Shebalkina. MIT արտոնագիր։',
+    footer: '&copy; 2026 Anastasia Shebalkina. MIT արտոնագիր։',
   },
   ka: {
     subtitle:
@@ -2337,7 +2337,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'დახურვის ღილაკი',
     act_swipe_down: 'გასმა ქვემოთ',
     act_2_swipe_down: 'ორი თითით ქვემოთ',
-    footer: '&copy; 2025 Anastasia Shebalkina. MIT ლიცენზია.',
+    footer: '&copy; 2026 Anastasia Shebalkina. MIT ლიცენზია.',
   },
   uz: {
     subtitle:
@@ -2408,7 +2408,7 @@ const TRANSLATIONS = {
     act_cross_btn: 'Yopish tugmasi',
     act_swipe_down: 'Pastga surish',
     act_2_swipe_down: 'Ikki barmoq bilan pastga',
-    footer: '&copy; 2025 Anastasia Shebalkina. MIT litsenziyasi.',
+    footer: '&copy; 2026 Anastasia Shebalkina. MIT litsenziyasi.',
   },
 };
 

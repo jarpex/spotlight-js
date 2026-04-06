@@ -1,4 +1,3 @@
-/* eslint-disable */
 const { defineConfig } = require('vite');
 const fs = require('fs');
 const path = require('path');
@@ -56,11 +55,16 @@ const patchLogs = () => {
 
 patchLogs();
 
+// Detect CLI flag `--no-auto-init` or environment variable.
+const NO_AUTO_INIT_FLAG =
+  process.argv.includes('--no-auto-init') ||
+  process.env.SPOTLIGHT_NO_AUTO_INIT === '1';
+
 const getBanner = () => {
   try {
     const src = fs.readFileSync(
       path.resolve(__dirname, 'src/spotlight.js'),
-      'utf8'
+      'utf8',
     );
     const match = src.match(/\/\*![\s\S]*?\*\//);
     return match ? match[0] : '';
@@ -76,7 +80,7 @@ const transformers = {
   shortenIds(code) {
     const idRegex = /(?<![\w-])spot-(?!light)[a-zA-Z0-9-]+/g;
     const ids = Array.from(new Set(code.match(idRegex) || [])).sort(
-      (a, b) => b.length - a.length
+      (a, b) => b.length - a.length,
     );
     const map = new Map();
     const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ';
@@ -154,7 +158,7 @@ const transformers = {
           end: match.index + match[0].length,
           txt: match[0].replace(
             match[1],
-            min.replace(/\\/g, '\\\\').replace(/`/g, '\\`')
+            min.replace(/\\/g, '\\\\').replace(/`/g, '\\`'),
           ),
         });
       } catch (err) {
@@ -184,6 +188,16 @@ function spotlightOptimizer() {
     async transform(code, id) {
       if (!id.endsWith('src/spotlight.js')) return null;
       let out = code;
+
+      // Strip auto-init block from production bundles only when the build
+      // was invoked with `--no-auto-init` or env var.
+      if (NO_AUTO_INIT_FLAG) {
+        out = out.replace(
+          /\/\*__SPOTLIGHT_AUTO_INIT_START__\*\/[\s\S]*?\/\*__SPOTLIGHT_AUTO_INIT_END__\*\//g,
+          '',
+        );
+      }
+
       out = transformers.shortenIds(out);
       out = transformers.minifyCss(out);
       out = transformers.optimizeSvg(out);
@@ -219,7 +233,7 @@ function spotlightOptimizer() {
 
           console.log(
             `dist/\x1b[36m${fileName}\x1b[0m  ` +
-              `\x1b[38;5;15m${size(buf.length)} │ gzip: \x1b[1;30m${size(gz(buf))} \x1b[0m\x1b[38;5;15m│ \x1b[38;5;15mbrotli: \x1b[1;30m${size(br(buf))}\x1b[0m`
+              `\x1b[38;5;15m${size(buf.length)} │ gzip: \x1b[1;30m${size(gz(buf))} \x1b[0m\x1b[38;5;15m│ \x1b[38;5;15mbrotli: \x1b[1;30m${size(br(buf))}\x1b[0m`,
           );
         } catch (err) {
           console.error('Error reporting bundle size:', err);
@@ -235,20 +249,22 @@ const plugins = [spotlightOptimizer()];
 const replace = safeRequire('@rollup/plugin-replace');
 const strip = safeRequire('@rollup/plugin-strip');
 
-if (replace)
+if (replace && NO_AUTO_INIT_FLAG) {
   plugins.push(
     replace({
       'process.env.NODE_ENV': JSON.stringify('production'),
+      __SPOTLIGHT_AUTO_INIT__: JSON.stringify(false),
       preventAssignment: true,
-    })
+    }),
   );
+}
 if (strip)
   plugins.push(
     strip({
       include: 'src/**',
       functions: ['assert.*', 'debug*'],
       sourceMap: false,
-    })
+    }),
   );
 
 module.exports = defineConfig({

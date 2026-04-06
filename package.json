@@ -1,13 +1,16 @@
 {
   "name": "spotlight-js",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Spotlight JS is a tiny, dependency-free image viewer that instantly turns images on any webpage into a polished full-screen gallery. It provides smooth animations, trackpad gestures, touch, keyboard shortcuts and fullscreen support — all wired up automatically with zero configuration.",
   "main": "index.js",
   "scripts": {
     "build": "vite build",
     "build:safe": "vite build -c vite.config.safe.js",
+    "build:no-auto-init": "node scripts/run-build.js",
+    "build:safe:no-auto-init": "node scripts/run-build.js --safe",
     "lint": "eslint src --ext .js",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "demo": "vite --open /demo/index.html"
   },
   "keywords": [
     "image",
@@ -37,9 +40,9 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import": "^2.32.0",
     "html-minifier-terser": "^7.2.0",
-    "prettier": "^3.7.1",
-    "svgo": "^3.3.2",
-    "terser": "^5.44.1",
-    "vite": "^7.2.4"
+    "prettier": "^3.8.1",
+    "svgo": "^4.0.1",
+    "terser": "^5.46.1",
+    "vite": "^8.0.5"
   }
 }

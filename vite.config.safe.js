@@ -1,4 +1,3 @@
-/* eslint-disable */
 const { defineConfig } = require('vite');
 const fs = require('fs');
 const path = require('path');
@@ -50,11 +49,16 @@ const patchLogs = () => {
 
 patchLogs();
 
+// Detect CLI flag `--no-auto-init` or environment variable.
+const NO_AUTO_INIT_FLAG =
+  process.argv.includes('--no-auto-init') ||
+  process.env.SPOTLIGHT_NO_AUTO_INIT === '1';
+
 const getBanner = () => {
   try {
     const src = fs.readFileSync(
       path.resolve(__dirname, 'src/spotlight.js'),
-      'utf8'
+      'utf8',
     );
     const match = src.match(/\/\*![\s\S]*?\*\//);
     return match ? match[0] : '';
@@ -116,6 +120,16 @@ function spotlightOptimizer() {
     transform(code, id) {
       if (!id.endsWith('src/spotlight.js')) return null;
       let out = code;
+
+      // Strip auto-init block from production bundles only when the build
+      // was invoked with `--no-auto-init` or env var.
+      if (NO_AUTO_INIT_FLAG) {
+        out = out.replace(
+          /\/\*__SPOTLIGHT_AUTO_INIT_START__\*\/[\s\S]*?\/\*__SPOTLIGHT_AUTO_INIT_END__\*\//g,
+          '',
+        );
+      }
+
       out = transformers.minifyCss(out);
       out = transformers.optimizeSvg(out);
       return { code: out, map: null };
@@ -148,7 +162,7 @@ function spotlightOptimizer() {
 
           console.log(
             `dist/\x1b[36m${fileName}\x1b[0m  ` +
-              `\x1b[38;5;15m${size(buf.length)} │ gzip: \x1b[1;30m${size(gz(buf))} \x1b[0m\x1b[38;5;15m│ \x1b[38;5;15mbrotli: \x1b[1;30m${size(br(buf))}\x1b[0m`
+              `\x1b[38;5;15m${size(buf.length)} │ gzip: \x1b[1;30m${size(gz(buf))} \x1b[0m\x1b[38;5;15m│ \x1b[38;5;15mbrotli: \x1b[1;30m${size(br(buf))}\x1b[0m`,
           );
         } catch (err) {
           console.error('Error reporting bundle sizes:', err);
@@ -159,9 +173,26 @@ function spotlightOptimizer() {
 }
 
 // --- Config ---
+const replace = (() => {
+  try {
+    return require('@rollup/plugin-replace');
+  } catch {
+    return null;
+  }
+})();
+
+const plugins = [spotlightOptimizer()];
+if (replace && NO_AUTO_INIT_FLAG) {
+  plugins.push(
+    replace({
+      __SPOTLIGHT_AUTO_INIT__: JSON.stringify(false),
+      preventAssignment: true,
+    }),
+  );
+}
 
 module.exports = defineConfig({
-  plugins: [spotlightOptimizer()],
+  plugins,
   build: {
     reportCompressedSize: false,
     lib: { entry: 'src/spotlight.js', name: 'Spotlight', formats: ['iife'] },

@@ -1,20 +1,29 @@
 /*!
- * Spotlight JS v1.0.3
- * Copyright (c) 2025 Anastasia Shebalkina
+ * Spotlight JS v1.0.4
+ * Copyright (c) 2026 Anastasia Shebalkina
  * Licensed under the MIT License (see LICENSE)
  *
  * Includes Tabler Icons (https://tabler.io/icons), MIT License
- * Copyright (c) 2020-2025 Tabler Icons Authors (see LICENSE.tabler-icons)
+ * Copyright (c) 2020-2026 Tabler Icons Authors (see LICENSE.tabler-icons)
  */
 
 (() => {
   'use strict';
+
+  // Internal state moved from window to closure for better encapsulation
+  let __spotlight_instance = null;
+  let __spotlight_debug__ = false;
 
   // ============================================================================
   // CONSTANTS
   // ============================================================================
   // All magic numbers and configuration values are centralized here for
   // maintainability. Grouped by functional area.
+
+  // --- Security ---
+  // Make sure to disable file: and blob: schemes for images if integrating with WebView/Electron to mitigate potential exploits
+  const BLOCKED_URL_PROTOCOLS = ['javascript:', 'vbscript:'];
+  const SAFE_IMAGE_PROTOCOLS = ['http:', 'https:', 'data:'];
 
   // --- Event Handling ---
   const EVENT_PREFIX_LENGTH = 2; // Length of 'on' prefix for event handlers
@@ -77,6 +86,11 @@
   const SLIDE_SCALE_INITIAL = 0.96; // Initial scale for slide-in animation
   const CLOSE_DELAY = 220; // Delay before removing overlay from DOM after close (ms)
   const UI_HIDE_DELAY = 1500; // Delay before hiding UI after inactivity (ms)
+  const FPS_INTERVAL = 16; // ~60fps interval in ms
+  const WEAKREF_CLEANUP_INTERVAL = 30000; // 30 seconds in ms
+
+  // --- Error Tracking ---
+  const MAX_CAUGHT_ERRORS = 200; // Maximum number of caught errors to retain
 
   // --- Render Loop ---
   const CONVERGENCE_SCALE = 0.001; // Convergence threshold for scale animation
@@ -92,6 +106,35 @@
   // --- Accessibility ---
   const ANNOUNCE_CLEAR_DELAY = 1000; // Delay to clear live announcements (ms)
   const COMPLETION_ANNOUNCE_OFFSET = 200; // Additional delay for completion message
+
+  // --- CSS Classes ---
+  const CLASS_UI_HIDDEN = 'spot-ui-hidden';
+  const CLASS_UI_VISIBLE = 'spot-ui-visible';
+  const CLASS_NAV_HIDDEN = 'spot-nav-hidden';
+  const CLASS_OPEN = 'spot-open';
+
+  // ============================================================================
+  // CONFIGURATION
+  // ============================================================================
+  const DEFAULT_CONFIG = {
+    cspNonce: null,
+    allowLocalFiles: false,
+    // Hard limit to prevent memory abuse from massive inline payloads.
+    maxDataUrlLength: 2_000_000,
+    // Restrict inline data:image MIME types to common safe formats.
+    allowedDataImageMimeTypes: [
+      'image/png',
+      'image/jpeg',
+      'image/jpg',
+      'image/webp',
+      'image/gif',
+      'image/avif',
+    ],
+    // Optional hook to surface internal errors in production monitoring.
+    onError: null,
+    // Limit auto-init click delegation scope to gallery roots.
+    autoInitRootSelector: 'article, .gallery',
+  };
 
   // ============================================================================
   // UTILITY FUNCTIONS
@@ -116,12 +159,36 @@
   const create = (tag, attrs = {}, children = []) => {
     const el = document.createElement(tag);
     Object.entries(attrs).forEach(([k, v]) => {
-      if (k === 'style') {
-        Object.assign(el.style, v);
-      } else if (k.startsWith('on') && typeof v === 'function') {
-        el.addEventListener(k.slice(EVENT_PREFIX_LENGTH), v);
-      } else if (k === 'dataset') {
-        Object.entries(v).forEach(([dk, dv]) => (el.dataset[dk] = dv));
+      // Security: Protect against Prototype Pollution
+      if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+        return;
+      }
+
+      if (k === 'style' && v && typeof v === 'object') {
+        Object.entries(v).forEach(([sk, sv]) => {
+          if (
+            sk !== '__proto__' &&
+            sk !== 'constructor' &&
+            sk !== 'prototype'
+          ) {
+            el.style[sk] = sv;
+          }
+        });
+      } else if (k.startsWith('on')) {
+        // Only allow function handlers. String handlers (onclick="...") are blocked.
+        if (typeof v === 'function') {
+          el.addEventListener(k.slice(EVENT_PREFIX_LENGTH), v);
+        }
+      } else if (k === 'dataset' && v && typeof v === 'object') {
+        Object.entries(v).forEach(([dk, dv]) => {
+          if (
+            dk !== '__proto__' &&
+            dk !== 'constructor' &&
+            dk !== 'prototype'
+          ) {
+            el.dataset[dk] = dv;
+          }
+        });
       } else {
         el.setAttribute(k, v);
       }
@@ -129,22 +196,97 @@
     children.forEach((c) =>
       typeof c === 'string'
         ? el.appendChild(document.createTextNode(c))
-        : el.appendChild(c)
+        : el.appendChild(c),
     );
     return el;
+  };
+
+  /**
+   * Helper to create an SVG icon element using createElementNS.
+   * @param {string[]} paths - Array of path 'd' attributes
+   * @param {string} className - Additional CSS classes
+   * @returns {Element} SVG element
+   */
+  const createIcon = (paths, className = '') => {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const attrs = {
+      width: '24',
+      height: '24',
+      viewBox: '0 0 24 24',
+      fill: 'none',
+      stroke: 'currentColor',
+      'stroke-width': '2',
+      'stroke-linecap': 'round',
+      'stroke-linejoin': 'round',
+    };
+    Object.entries(attrs).forEach(([k, v]) => svg.setAttribute(k, v));
+
+    if (className) {
+      svg.classList.add(
+        'icon',
+        'icon-tabler',
+        'icons-tabler-outline',
+        ...className.split(' ').filter(Boolean),
+      );
+    }
+
+    // Default Tabler background path
+    const bg = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    bg.setAttribute('stroke', 'none');
+    bg.setAttribute('d', 'M0 0h24v24H0z');
+    bg.setAttribute('fill', 'none');
+    svg.appendChild(bg);
+
+    paths.forEach((d) => {
+      const path = document.createElementNS(
+        'http://www.w3.org/2000/svg',
+        'path',
+      );
+      path.setAttribute('d', d);
+      svg.appendChild(path);
+    });
+
+    return svg;
   };
 
   // ============================================================================
   // SVG ICONS
   // ============================================================================
 
-  const SVG_MAXIMIZE = `
-  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-arrows-maximize"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M16 4l4 0l0 4" /><path d="M14 10l6 -6" /><path d="M8 20l-4 0l0 -4" /><path d="M4 20l6 -6" /><path d="M16 20l4 0l0 -4" /><path d="M14 14l6 6" /><path d="M8 4l-4 0l0 4" /><path d="M4 4l6 6" /></svg>
-  `;
-
-  const SVG_MINIMIZE = `
-  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-arrows-minimize"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M5 9l4 0l0 -4" /><path d="M3 3l6 6" /><path d="M5 15l4 0l0 4" /><path d="M3 21l6 -6" /><path d="M19 9l-4 0l0 -4" /><path d="M15 9l6 -6" /><path d="M19 15l-4 0l0 4" /><path d="M15 15l6 6" /></svg>
-  `;
+  const PATHS_MAXIMIZE = [
+    'M16 4l4 0l0 4',
+    'M14 10l6 -6',
+    'M8 20l-4 0l0 -4',
+    'M4 20l6 -6',
+    'M16 20l4 0l0 -4',
+    'M14 14l6 6',
+    'M8 4l-4 0l0 4',
+    'M4 4l6 6',
+  ];
+  const PATHS_MINIMIZE = [
+    'M5 9l4 0l0 -4',
+    'M3 3l6 6',
+    'M5 15l4 0l0 4',
+    'M3 21l6 -6',
+    'M19 9l-4 0l0 -4',
+    'M15 9l6 -6',
+    'M19 15l-4 0l0 4',
+    'M15 15l6 6',
+  ];
+  const PATHS_PREV = ['M13 20l-3 -8l3 -8'];
+  const PATHS_NEXT = ['M11 4l3 8l-3 8'];
+  const PATHS_ZOOM_OUT = [
+    'M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0',
+    'M7 10l6 0',
+    'M21 21l-6 -6',
+  ];
+  const PATHS_ZOOM_IN = [
+    'M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0',
+    'M7 10l6 0',
+    'M10 7l0 6',
+    'M21 21l-6 -6',
+  ];
+  const PATHS_CLOSE = ['M18 6l-12 12', 'M6 6l12 12'];
 
   // ============================================================================
   // SPOTLIGHT CLASS
@@ -164,6 +306,65 @@
    * @class
    */
   class Spotlight {
+    #rafId = null;
+    #renderActive = false;
+    #uiHideTimer = null;
+    #uiHideDelay = UI_HIDE_DELAY;
+    #wheelSwipeAccum = 0;
+    #wheelSwipeTimer = null;
+    #wheelMode = null; // 'swipe' | 'zoom'
+    #lastSwipeNavTime = 0; // Timestamp of last horizontal swipe navigation
+    #lastWheelEventTime = 0; // Timestamp of last wheel event (for inertia detection)
+    #lastWheelDeltaX = 0; // Magnitude of last wheel delta X (for acceleration detection)
+    #lastMouseWheelNav = 0; // Timestamp of last mouse wheel navigation
+    #swipeModeLocked = false; // True during debounce after navigation
+    #trackpadSwipeToClose = false; // Flag for trackpad swipe to close gesture
+    #pendingSlideDir = 0;
+    #dragPointerId = null;
+    #dragLast = { x: 0, y: 0 };
+    #dragStart = null;
+    #isPinching = false;
+    #caughtErrors = [];
+    #abortController = null;
+    #lastTouchTime = 0;
+    #wheelSource = null;
+    #hasTrackpad = false;
+    #pendingCalibrationListener = null;
+    #lastFocusedBeforeCalibration = null;
+    #calibrationKeydownHandler = null;
+    #calibrationFocusable = null;
+    #pointerOverUi = false;
+    #pointerOverUiCount = 0;
+    #isVerticalSwipe = false;
+    #swipeIntent = false;
+    #lastRenderTime = 0;
+    #resizeObserver = null;
+    #lastFocused = null;
+    #uiShowTimer = null;
+    #scannedImages = typeof WeakSet === 'function' ? new WeakSet() : new Set();
+    #attachedListeners =
+      typeof WeakMap === 'function' ? new WeakMap() : new Map();
+    #trackedElements = new Set(); // Store WeakRef<Element> or Element fallback for cleanup
+    #managedListeners = [];
+    #observer = null;
+    #fadeableNodesCache = null;
+    #pendingTimers = new Set();
+    #weakRefCleanupTimer = null;
+    #lastWheelEventProcessed = 0;
+    #lastPointerMoveProcessed = 0;
+    #cssInjected = false;
+
+    #addTimer(callback, delay) {
+      const id = setTimeout(() => {
+        this.#pendingTimers.delete(id);
+        if (this.overlay) {
+          callback();
+        }
+      }, delay);
+      this.#pendingTimers.add(id);
+      return id;
+    }
+
     /**
      * Creates a new Spotlight instance.
      * Initializes state, detects input methods, injects styles, and creates the overlay.
@@ -181,39 +382,25 @@
         translateY: 0,
         fullscreen: false,
       };
-      this._rafId = null;
-      this._renderActive = false;
+
       this.renderState = {
         scale: 1,
         translateX: 0,
         translateY: 0,
       };
-      this._uiHideTimer = null;
-      this._uiHideDelay = UI_HIDE_DELAY;
-      this._wheelSwipeAccum = 0;
-      this._wheelSwipeTimer = null;
-      this._wheelMode = null; // 'swipe' | 'zoom'
-      this._lastSwipeNavTime = 0; // Timestamp of last horizontal swipe navigation
-      this._lastWheelEventTime = 0; // Timestamp of last wheel event (for inertia detection)
-      this._lastWheelDeltaX = 0; // Magnitude of last wheel delta X (for acceleration detection)
-      this._lastMouseWheelNav = 0; // Timestamp of last mouse wheel navigation
-      this._swipeModeLocked = false; // True during debounce after navigation
-      this._trackpadSwipeToClose = false; // Flag for trackpad swipe to close gesture
-      this._pendingSlideDir = 0;
-      this.touchStart = null;
-      this._dragPointerId = null;
-      this._dragLast = { x: 0, y: 0 };
-      this._isPinching = false;
+
       this.pointers = new Map();
-      this._caughtErrors = [];
       // Debug mode: allow console output for debugging if enabled
-      this.debug = Boolean(window && window.__spotlight_debug__);
+      this.debug = Boolean(__spotlight_debug__);
+
+      if (typeof AbortController === 'function') {
+        this.#abortController = new AbortController();
+      }
 
       // Input modality detection
-      this._lastTouchTime = 0;
-      this._wheelSource = null;
-      this._hasTrackpad =
-        document.body?.classList.contains('using-trackpad') || false;
+      this.#hasTrackpad =
+        (document.body && document.body.classList.contains('using-trackpad')) ||
+        false;
 
       // Trackpad Inversion
       try {
@@ -227,16 +414,29 @@
       }
       this.calibrationActive = false;
       this.calibrationSource = null;
-      this._pendingCalibrationListener = null;
 
-      this._init();
+      this.#checkCSP();
+
+      this.#init();
+
+      // Start scheduled cleanup for expired WeakRefs
+      this.#scheduleWeakRefCleanup();
     }
 
+    /**
+     * @internal — exposed for window.Spotlight API; not part of the public contract.
+     */
     _reportError(op, err) {
       try {
-        this._caughtErrors.push({ op, err, time: Date.now() });
-      } catch {
+        if (this.#caughtErrors.length >= MAX_CAUGHT_ERRORS) {
+          this.#caughtErrors.shift();
+        }
+        this.#caughtErrors.push({ op, err, time: Date.now() });
+      } catch (e) {
         // If the array is not writable for some reason, fall back to noop
+        if (this.debug && globalThis.console && globalThis.console.error) {
+          globalThis.console.error(`[Spotlight] Failed to capture error:`, e);
+        }
       }
       if (
         this.debug &&
@@ -246,21 +446,243 @@
       ) {
         globalThis.console.warn(`[Spotlight] ${op}:`, err);
       }
+      this.#notifyErrorHook(op, err);
     }
 
+    /**
+     * Notifies the configured error hook (optional production telemetry).
+     * @param {string} op - Operation name
+     * @param {Error} err - Error object
+     * @private
+     */
+    #notifyErrorHook(op, err) {
+      // Optional escalation hook for production telemetry.
+      try {
+        const config =
+          (window.Spotlight && window.Spotlight.config) || DEFAULT_CONFIG;
+        if (typeof config.onError === 'function') {
+          config.onError({ op, err, time: Date.now() });
+        }
+      } catch {
+        // Never throw from internal error reporter.
+      }
+    }
+
+    /**
+     * @internal — exposed for window.Spotlight API; not part of the public contract.
+     */
     _getCapturedErrors() {
-      return Array.from(this._caughtErrors || []);
+      return Array.from(this.#caughtErrors || []);
     }
 
+    /**
+     * @internal — exposed for window.Spotlight API; not part of the public contract.
+     */
     _clearCapturedErrors() {
-      this._caughtErrors = [];
+      this.#caughtErrors = [];
     }
 
-    _init() {
-      this._detectInputMethod();
-      this._injectStyles();
-      this._scanCollections();
-      this._createOverlay();
+    #getListenerOptions(options = {}) {
+      if (this.#abortController) {
+        return { ...options, signal: this.#abortController.signal };
+      }
+      return { ...options };
+    }
+
+    #addManagedListener(target, type, handler, options = {}) {
+      if (!target || typeof target.addEventListener !== 'function') {
+        return;
+      }
+
+      const listenerOptions = this.#getListenerOptions(options);
+      target.addEventListener(type, handler, listenerOptions);
+
+      if (!this.#abortController) {
+        this.#managedListeners.push({ target, type, handler, options });
+      }
+    }
+
+    #cleanupManagedListeners() {
+      if (!this.#managedListeners.length) {
+        return;
+      }
+
+      const listeners = this.#managedListeners;
+      this.#managedListeners = [];
+      listeners.forEach(({ target, type, handler, options }) => {
+        if (target && typeof target.removeEventListener === 'function') {
+          target.removeEventListener(type, handler, options);
+        }
+      });
+    }
+
+    #checkCSP() {
+      try {
+        const cspMeta = document.querySelector(
+          'meta[http-equiv="Content-Security-Policy"]',
+        );
+        if (cspMeta && this.debug) {
+          this._reportError(
+            'csp',
+            new Error(
+              'Content-Security-Policy detected. Inline style injection can be restricted by host policy.',
+            ),
+          );
+        }
+      } catch (err) {
+        this._reportError('csp.check', err);
+      }
+    }
+
+    #sanitizeText(text) {
+      if (typeof text !== 'string') {
+        return '';
+      }
+      return text.replace(/[\x00-\x1f\x7f]+/g, '').trim();
+    }
+
+    #sanitizeCollectionIndex(value) {
+      const idx = Number.parseInt(String(value), 10);
+      return Number.isInteger(idx) && idx >= 0 ? idx : null;
+    }
+
+    #isEditableTarget(target) {
+      if (!target || target.nodeType !== Node.ELEMENT_NODE) {
+        return false;
+      }
+      const el = /** @type {Element} */ (target);
+      if (el.isContentEditable) {
+        return true;
+      }
+      const tag = (el.tagName || '').toLowerCase();
+      return tag === 'input' || tag === 'textarea' || tag === 'select';
+    }
+
+    /**
+     * Validates and normalizes an image URL candidate.
+     * Relative paths are allowed, absolute URLs are protocol-checked.
+     * @param {string} rawUrl - The raw URL string to validate
+     * @returns {string|null} Sanitized URL or null if invalid
+     * @private
+     */
+    #getSafeImageUrl(rawUrl) {
+      if (typeof rawUrl !== 'string') {
+        return null;
+      }
+      const candidate = rawUrl.trim();
+      if (!candidate) {
+        return null;
+      }
+      // Handle simple cases (relative paths or data URIs)
+      const isAbsolute = candidate.includes('://');
+      const isData = candidate.toLowerCase().startsWith('data:');
+      if (!isAbsolute && !isData) {
+        // If it looks like a protocol but doesn't have :// (e.g., javascript:)
+        if (/^[a-z][a-z0-9+.-]*:/i.test(candidate)) {
+          // Fall through to full URL validation
+        } else {
+          return candidate; // Assume relative path
+        }
+      }
+      try {
+        const url = new window.URL(candidate, window.location.href);
+        return this.#validateUrlProtocol(url);
+      } catch (err) {
+        this._reportError('getSafeImageUrl.parse', err);
+        return null;
+      }
+    }
+
+    /**
+     * Validates URL protocol against allowed/blocked lists.
+     * @param {URL} url - URL object to validate
+     * @returns {string|null} Validated URL or null if blocked
+     * @private
+     */
+    #validateUrlProtocol(url) {
+      const protocol = (url.protocol || '').toLowerCase();
+      if (BLOCKED_URL_PROTOCOLS.includes(protocol)) {
+        return null;
+      }
+      const config =
+        (window.Spotlight && window.Spotlight.config) || DEFAULT_CONFIG;
+      const isLocal = protocol === 'file:' || protocol === 'blob:';
+      if (isLocal) {
+        return config.allowLocalFiles ? url.href : null;
+      }
+      if (protocol === 'data:') {
+        return this.#isAllowedDataImageUrl(url.href, config) ? url.href : null;
+      }
+      return SAFE_IMAGE_PROTOCOLS.includes(protocol) ? url.href : null;
+    }
+
+    /**
+     * Applies DoS guards for data:image URLs by MIME whitelist and length limit.
+     * @param {string} dataUrl
+     * @param {typeof DEFAULT_CONFIG} config
+     * @returns {boolean}
+     */
+    #isAllowedDataImageUrl(dataUrl, config) {
+      if (typeof dataUrl !== 'string') {
+        return false;
+      }
+
+      const maxLen = Number(config.maxDataUrlLength);
+      if (Number.isFinite(maxLen) && maxLen > 0 && dataUrl.length > maxLen) {
+        this._reportError(
+          'dataUrl.length',
+          new Error(
+            `Blocked data URL longer than maxDataUrlLength (${maxLen})`,
+          ),
+        );
+        return false;
+      }
+
+      const match = /^data:([^;,]+)(?:;[^,]*)?,/i.exec(dataUrl);
+      const mime = (match && match[1] ? match[1] : '').toLowerCase();
+      if (!mime.startsWith('image/')) {
+        return false;
+      }
+
+      const allowList = Array.isArray(config.allowedDataImageMimeTypes)
+        ? config.allowedDataImageMimeTypes.map((m) => String(m).toLowerCase())
+        : [];
+
+      if (allowList.length > 0 && !allowList.includes(mime)) {
+        this._reportError(
+          'dataUrl.mime',
+          new Error(`Blocked unsupported data URL MIME type: ${mime}`),
+        );
+        return false;
+      }
+
+      return true;
+    }
+
+    /**
+     * Checks whether an image belongs to the current collection container,
+     * excluding images nested inside child article/.gallery containers.
+     * @param {Element} img
+     * @param {Element} container
+     * @returns {boolean}
+     */
+    #isImageInContainer(img, container) {
+      let node = img.parentElement;
+      while (node && node !== container) {
+        const tag = (node.tagName || '').toLowerCase();
+        if (tag === 'article' || node.classList.contains('gallery')) {
+          return false;
+        }
+        node = node.parentElement;
+      }
+      return node === container;
+    }
+
+    #init() {
+      this.#detectInputMethod();
+      this.#injectStyles();
+      this.#scanCollections();
+      this.#createOverlay();
 
       this.liveRegion = create('div', {
         'aria-live': 'polite',
@@ -278,54 +700,55 @@
       });
       this.nodes.shell.appendChild(this.liveRegion);
 
-      this._bindGlobalListeners();
+      this.#bindGlobalListeners();
     }
 
-    _detectInputMethod() {
-      window.addEventListener(
+    #detectInputMethod() {
+      this.#addManagedListener(
+        window,
         'touchstart',
         () => {
-          this._lastTouchTime = window.performance.now();
-          this._setInputMode('touch');
+          this.#lastTouchTime = window.performance.now();
+          this.#setInputMode('touch');
         },
-        { passive: true }
+        { passive: true },
       );
     }
 
-    _determineWheelSource(event) {
+    #determineWheelSource(event) {
       if (!event) {
-        return this._wheelSource || 'mouse';
+        return this.#wheelSource || 'mouse';
       }
 
       // Guard against synthetic events fired while touching the screen.
       const now = window.performance.now();
-      if (now - (this._lastTouchTime || 0) < INPUT_DETECTION_DELAY) {
-        return this._wheelSource || 'mouse';
+      if (now - (this.#lastTouchTime || 0) < INPUT_DETECTION_DELAY) {
+        return this.#wheelSource || 'mouse';
       }
 
       // If we already detected trackpad, keep using it (sticky)
       // This prevents re-detection delays during gesture pauses
-      if (this._wheelSource === 'trackpad') {
+      if (this.#wheelSource === 'trackpad') {
         return 'trackpad';
       }
 
-      const isTrackpad = this._isTrackpadWheel(event);
+      const isTrackpad = this.#isTrackpadWheel(event);
       const source = isTrackpad ? 'trackpad' : 'mouse';
 
       if (isTrackpad) {
-        this._hasTrackpad = true;
+        this.#hasTrackpad = true;
       }
 
-      if (source !== this._wheelSource) {
-        this._setInputMode(isTrackpad ? 'trackpad' : 'mouse');
+      if (source !== this.#wheelSource) {
+        this.#setInputMode(isTrackpad ? 'trackpad' : 'mouse');
       }
 
-      this._wheelSource = source;
+      this.#wheelSource = source;
 
       return source;
     }
 
-    _setInputMode(mode) {
+    #setInputMode(mode) {
       const body = document.body;
       if (!body) {
         return;
@@ -335,13 +758,13 @@
         body.classList.add('using-touch');
       } else if (mode === 'trackpad') {
         body.classList.add('using-trackpad');
-        this._hasTrackpad = true;
+        this.#hasTrackpad = true;
       } else {
         body.classList.add('using-mouse');
       }
     }
 
-    _isTrackpadWheel(event) {
+    #isTrackpadWheel(event) {
       if (!event) {
         return false;
       }
@@ -375,17 +798,17 @@
       return true;
     }
 
-    _checkCalibration() {
+    #checkCalibration() {
       if (!this.needsCalibration || this.calibrationActive) {
         return;
       }
 
       const trigger = () => {
-        this._showCalibration('trackpad');
+        this.#showCalibration('trackpad');
       };
 
       if (
-        this._hasTrackpad ||
+        this.#hasTrackpad ||
         document.body.classList.contains('using-trackpad')
       ) {
         trigger();
@@ -393,27 +816,29 @@
       }
 
       const waitForTrackpad = (e) => {
-        const source = this._determineWheelSource(e);
+        const source = this.#determineWheelSource(e);
         if (source !== 'trackpad') {
           return;
         }
         window.removeEventListener('wheel', waitForTrackpad);
-        this._pendingCalibrationListener = null;
+        this.#pendingCalibrationListener = null;
         trigger();
       };
 
-      window.addEventListener('wheel', waitForTrackpad, { passive: true });
-      this._pendingCalibrationListener = waitForTrackpad;
+      this.#addManagedListener(window, 'wheel', waitForTrackpad, {
+        passive: true,
+      });
+      this.#pendingCalibrationListener = waitForTrackpad;
     }
 
-    _showCalibration(source = 'trackpad') {
+    #showCalibration(source = 'trackpad') {
       if (source !== 'trackpad' || this.calibrationActive) {
         return;
       }
 
-      if (this._pendingCalibrationListener) {
-        window.removeEventListener('wheel', this._pendingCalibrationListener);
-        this._pendingCalibrationListener = null;
+      if (this.#pendingCalibrationListener) {
+        window.removeEventListener('wheel', this.#pendingCalibrationListener);
+        this.#pendingCalibrationListener = null;
       }
 
       this.calibrationSource = source;
@@ -439,13 +864,16 @@
         'Swipe two fingers down to set scroll direction',
       ]);
 
-      const animContainer = create('div', { class: 'trackpad-container' });
-      animContainer.innerHTML = `
-        <div class="trackpad">
-            <div class="finger swipe-down" style="margin-left: -22px;"></div>
-            <div class="finger swipe-down" style="margin-left: 22px;"></div>
-        </div>
-      `;
+      const animContainer = create('div', { class: 'trackpad-container' }, [
+        create('div', {
+          class: 'finger swipe-down',
+          style: { marginLeft: '-22px' },
+        }),
+        create('div', {
+          class: 'finger swipe-down',
+          style: { marginLeft: '22px' },
+        }),
+      ]);
 
       const progressBar = create('div', { class: 'spot-progress-bar' });
       // Remove aria-live to prevent frequent updates from flooding screen readers;
@@ -468,7 +896,7 @@
       this.nodes.calibrationText = text;
 
       // Focus handling: trap focus inside the calibration dialog and allow keyboard escape to close
-      this._lastFocusedBeforeCalibration = document.activeElement;
+      this.#lastFocusedBeforeCalibration = document.activeElement;
       // Add a skip/close button for keyboard users
       const skipBtn = create(
         'button',
@@ -477,10 +905,10 @@
           'aria-label': 'Skip calibration',
           type: 'button',
         },
-        ['Skip']
+        ['Skip'],
       );
       // Clicking skip should fully disable the calibration prompt (do not re-open)
-      skipBtn.addEventListener('click', () => this._skipCalibration());
+      skipBtn.addEventListener('click', () => this.#skipCalibration());
       content.appendChild(skipBtn);
 
       // Fade in
@@ -489,34 +917,38 @@
         // Focus the dialog
         cal.focus();
         // Install keydown handler
-        this._calibrationKeydownHandler = (ev) =>
-          this._handleCalibrationKeydown(ev);
+        this.#calibrationKeydownHandler = (ev) =>
+          this.#handleCalibrationKeydown(ev);
         // Ensure calibration keydown listener is scoped to the calibration dialog
-        cal.addEventListener('keydown', this._calibrationKeydownHandler);
+        this.#addManagedListener(
+          cal,
+          'keydown',
+          this.#calibrationKeydownHandler,
+        );
         // Trap focus - store focusable elements
-        this._calibrationFocusable = Array.from(
+        this.#calibrationFocusable = Array.from(
           cal.querySelectorAll(
-            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-          )
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+          ),
         ).filter((el) => !el.hasAttribute('disabled'));
-        if (this._calibrationFocusable && this._calibrationFocusable.length) {
-          this._calibrationFocusable[0].focus();
+        if (this.#calibrationFocusable && this.#calibrationFocusable.length) {
+          this.#calibrationFocusable[0].focus();
         }
       });
     }
 
-    _handleCalibrationWheel(e) {
+    #handleCalibrationWheel(e) {
       if (this.calibrationSource !== 'trackpad') {
         return;
       }
 
       // Re-verify this is a trackpad event, not mouse
-      if (!this._isTrackpadWheel(e)) {
+      if (!this.#isTrackpadWheel(e)) {
         return;
       }
 
       // Startup delay - ignore input for INPUT_DETECTION_DELAY after calibration appears
-      if (this._isCalibrationStartupDelayActive()) {
+      if (this.#isCalibrationStartupDelayActive()) {
         e.preventDefault();
         e.stopPropagation();
         return;
@@ -535,33 +967,32 @@
 
       const progress = Math.min(
         Math.abs(this.calibrationAccum) / CALIBRATION_TARGET,
-        1
+        1,
       );
 
-      this._setCalibrationProgress(progress);
+      this.#setCalibrationProgress(progress);
     }
 
-    _isCalibrationStartupDelayActive() {
+    #isCalibrationStartupDelayActive() {
       return (
         this.calibrationStartTime &&
         Date.now() - this.calibrationStartTime < INPUT_DETECTION_DELAY
       );
     }
 
-    _setCalibrationProgress(progress) {
+    #setCalibrationProgress(progress) {
       if (this.nodes.calibrationProgress) {
         this.nodes.calibrationProgress.style.width = `${progress * PERCENTAGE}%`;
       }
-
       if (progress < 1) {
         return;
       }
-
       // Step 1 complete?
       if (this.calibrationStep === 0) {
         this.calibrationStep = 1;
         this.calibrationAccum = 0;
-        this.calibrationStartTime = Date.now(); // Reset delay for step 2
+        this.calibrationStartTime = Date.now();
+        // Reset delay for step 2
         if (this.nodes.calibrationProgress) {
           this.nodes.calibrationProgress.style.width = '0%';
         }
@@ -572,13 +1003,14 @@
         if (this.liveRegion) {
           this.liveRegion.textContent =
             'Trackpad calibration: step 1 complete. One more time.';
-          setTimeout(() => {
-            this.liveRegion.textContent = '';
+          this.#addTimer(() => {
+            if (this.liveRegion) {
+              this.liveRegion.textContent = '';
+            }
           }, ANNOUNCE_CLEAR_DELAY);
         }
         return;
       }
-
       // Finished
       const isNatural = this.calibrationAccum < 0;
       this.invertedScroll = isNatural;
@@ -588,22 +1020,22 @@
         this._reportError('localStorage.setItem', err);
       }
       this.needsCalibration = false;
-
       // Set cooldown to prevent immediate gesture triggering (e.g. swipe-to-close)
       this.calibrationCooldown = Date.now() + CALIBRATION_COOLDOWN;
-
       // Announce completion
       if (this.liveRegion) {
         this.liveRegion.textContent = 'Trackpad calibration complete.';
-        setTimeout(() => {
-          this.liveRegion.textContent = '';
+        this.#addTimer(() => {
+          if (this.liveRegion) {
+            this.liveRegion.textContent = '';
+          }
         }, ANNOUNCE_CLEAR_DELAY + COMPLETION_ANNOUNCE_OFFSET);
       }
       // Close calibration
       this.nodes.calibration.classList.remove('visible');
-      setTimeout(() => {
-        this._cleanupCalibrationHandlers();
-        this._removeCalibrationNodes();
+      this.#addTimer(() => {
+        this.#cleanupCalibrationHandlers();
+        this.#removeCalibrationNodes();
         this.calibrationActive = false;
         this.calibrationSource = null;
       }, CALIBRATION_CLOSE_DELAY);
@@ -611,32 +1043,33 @@
 
     /**
      * Removes calibration-related event handlers.
-     * Extracted to avoid code duplication between _setCalibrationProgress and _closeCalibration.
+     * Extracted to avoid code duplication between #setCalibrationProgress and #closeCalibration.
      */
-    _cleanupCalibrationHandlers() {
-      if (this._calibrationKeydownHandler) {
+    #cleanupCalibrationHandlers() {
+      if (this.#calibrationKeydownHandler) {
         try {
           const target =
-            this.nodes?.calibration &&
+            this.nodes &&
+            this.nodes.calibration &&
             typeof this.nodes.calibration.removeEventListener === 'function'
               ? this.nodes.calibration
               : document;
           target.removeEventListener(
             'keydown',
-            this._calibrationKeydownHandler
+            this.#calibrationKeydownHandler,
           );
-        } catch {
-          // Swallow cleanup errors
+        } catch (err) {
+          this._reportError('cleanupCalibrationHandlers', err);
         }
-        this._calibrationKeydownHandler = null;
+        this.#calibrationKeydownHandler = null;
       }
-      this._calibrationFocusable = null;
+      this.#calibrationFocusable = null;
     }
 
     /**
      * Removes calibration DOM nodes and resets related state.
      */
-    _removeCalibrationNodes() {
+    #removeCalibrationNodes() {
       if (this.nodes.calibration) {
         this.nodes.calibration.remove();
         this.nodes.calibration = null;
@@ -645,7 +1078,7 @@
       }
     }
 
-    _handleCalibrationKeydown(ev) {
+    #handleCalibrationKeydown(ev) {
       if (!this.calibrationActive) {
         return;
       }
@@ -654,13 +1087,13 @@
         ev.preventDefault();
         ev.stopPropagation();
         // Treat Escape as a 'skip' action – the user intends to dismiss the calibration without completing it
-        this._skipCalibration();
+        this.#skipCalibration();
         return;
       }
       if (ev.key !== 'Tab') {
         return;
       }
-      const focusables = this._calibrationFocusable || [];
+      const focusables = this.#calibrationFocusable || [];
       if (!focusables.length) {
         return;
       }
@@ -676,30 +1109,30 @@
       focusables[nextIndex].focus();
     }
 
-    _closeCalibration() {
+    #closeCalibration() {
       if (!this.calibrationActive || !this.nodes.calibration) {
         return;
       }
       this.nodes.calibration.classList.remove('visible');
-      this._cleanupCalibrationHandlers();
+      this.#cleanupCalibrationHandlers();
       this.calibrationActive = false;
       this.calibrationSource = null;
-      if (this._pendingCalibrationListener) {
-        window.removeEventListener('wheel', this._pendingCalibrationListener);
-        this._pendingCalibrationListener = null;
+      if (this.#pendingCalibrationListener) {
+        window.removeEventListener('wheel', this.#pendingCalibrationListener);
+        this.#pendingCalibrationListener = null;
       }
       setTimeout(() => {
-        this._removeCalibrationNodes();
+        this.#removeCalibrationNodes();
         if (
-          this._lastFocusedBeforeCalibration &&
-          typeof this._lastFocusedBeforeCalibration.focus === 'function'
+          this.#lastFocusedBeforeCalibration &&
+          typeof this.#lastFocusedBeforeCalibration.focus === 'function'
         ) {
-          this._lastFocusedBeforeCalibration.focus();
+          this.#lastFocusedBeforeCalibration.focus();
         }
       }, CALIBRATION_CLOSE_DELAY);
     }
 
-    _skipCalibration() {
+    #skipCalibration() {
       // Mark calibration as not required and clear any progress
       this.needsCalibration = false;
       this.calibrationAccum = 0;
@@ -707,25 +1140,87 @@
       this.calibrationStartTime = 0;
       // Prevent immediate re-triggering
       this.calibrationCooldown = Date.now() + CALIBRATION_COOLDOWN;
-      this._closeCalibration();
+      this.#closeCalibration();
     }
 
-    // Scan <article> and .gallery for images
-    _scanCollections() {
+    /**
+     * Initializes the IntersectionObserver for lazy discovery of galleries.
+     * @private
+     */
+    #initObserver() {
+      if (this.#observer || typeof IntersectionObserver !== 'function') {
+        return;
+      }
+      this.#observer = new IntersectionObserver(
+        (entries) => {
+          entries.forEach((entry) => {
+            if (entry.isIntersecting) {
+              const el = /** @type {Element} */ (entry.target);
+              this.scanContainer(el);
+              this.#observer.unobserve(el);
+            }
+          });
+        },
+        { rootMargin: '500px' },
+      );
+    }
+
+    /**
+     * Scan article and .gallery containers for images lazily.
+     * @private
+     */
+    #scanCollections() {
       this.collections = [];
-      const map = new Map(); // container -> items[]
+      this.#scannedImages =
+        typeof WeakSet === 'function' ? new WeakSet() : new Set();
+      this.#trackedElements = new Set();
 
-      // Find all images that are inside an article or .gallery
-      const images = $$('img');
+      const containers = $$('article, .gallery');
+      this.#initObserver();
 
-      images.forEach((img) => {
-        const container = img.closest('article, .gallery');
-        if (!container) {
-          return;
+      containers.forEach((container, idx) => {
+        this.collections.push({
+          id: `spot-${this.#randId()}`,
+          container,
+          items: [],
+          scanned: false,
+        });
+
+        // Store internal index for lazy lookup
+        container.dataset.spotlightCollectionIndex = String(idx);
+        if (this.#observer) {
+          this.#observer.observe(container);
+        } else {
+          this.scanContainer(container);
         }
+      });
+    }
 
-        if (!map.has(container)) {
-          map.set(container, []);
+    /**
+     * Scans a specific container for images and initializes its collection.
+     * Exposed as public for lazy scanning from click events.
+     * @param {Element} container - The container element to scan.
+     */
+    scanContainer(container) {
+      if (!container || !container.dataset) {
+        return;
+      }
+      const idxStr = container.dataset.spotlightCollectionIndex;
+      if (idxStr === undefined) {
+        return;
+      }
+      const idx = parseInt(idxStr, 10);
+      const collection = this.collections[idx];
+
+      if (!collection || collection.scanned) {
+        return;
+      }
+
+      const images = $$('img', container);
+      images.forEach((img) => {
+        // Skip images that belong to nested gallery/article containers.
+        if (!this.#isImageInContainer(img, container)) {
+          return;
         }
 
         // Try to get canonical src:
@@ -737,49 +1232,37 @@
         const figure = img.closest('figure');
         const captionEl = figure ? figure.querySelector('figcaption') : null;
         const captionText = captionEl
-          ? captionEl.textContent.trim()
-          : (
-              img.getAttribute('data-caption') ||
-              img.getAttribute('alt') ||
-              ''
-            ).trim();
+          ? this.#sanitizeText(captionEl.textContent || '')
+          : this.#sanitizeText(
+              img.getAttribute('data-caption') || img.getAttribute('alt') || '',
+            );
 
-        map.get(container).push({ src, el: img, caption: captionText });
+        const itemIdx = collection.items.length;
+        collection.items.push({ src, el: img, caption: captionText });
+
+        img.dataset.spotlightCollection = String(idx);
+        img.dataset.spotlightIndex = String(itemIdx);
+        img.style.cursor = 'zoom-in';
+
+        this.#scannedImages.add(img);
+        this.#trackElement(img);
       });
 
-      // Create collections
-      map.forEach((items, container) => {
-        if (!items.length) {
-          return;
-        }
-        const collectionIndex = this.collections.length;
-        this.collections.push({
-          id: `spot-${this._randId()}`,
-          container,
-          items,
-        });
-
-        // Update image datasets
-        items.forEach((item, idx) => {
-          item.el.dataset.spotlightCollection = String(collectionIndex);
-          item.el.dataset.spotlightIndex = String(idx);
-          item.el.style.cursor = 'zoom-in';
-        });
-      });
+      collection.scanned = true;
     }
 
-    _randId() {
+    #randId() {
       return Math.random()
         .toString(ID_BASE)
         .slice(ID_SLICE_START, ID_SLICE_END);
     }
 
     // Overlay DOM + controls
-    _createOverlay() {
+    #createOverlay() {
       // Root overlay
       const overlay = create('div', {
         id: 'spot-overlay',
-        class: 'spot-nav-hidden',
+        class: CLASS_NAV_HIDDEN,
         'aria-hidden': 'true',
         tabindex: '-1',
       });
@@ -798,14 +1281,19 @@
         'aria-label': 'Previous image',
         'data-dir': '-1',
       });
-      prevBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-compact-left"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M13 20l-3 -8l3 -8" /></svg>`;
+      prevBtn.appendChild(
+        createIcon(PATHS_PREV, 'icon-tabler-chevron-compact-left'),
+      );
 
       const canvas = create('div', { id: 'spot-canvas', class: 'spot-canvas' });
       const transform = create('div', {
         id: 'spot-transform',
         class: 'spot-transform',
       });
-      const img = create('img', { id: 'spot-img', draggable: 'false' });
+      const img = create('img', {
+        id: 'spot-img',
+        draggable: 'false',
+      });
 
       transform.appendChild(img);
       canvas.appendChild(transform);
@@ -816,7 +1304,9 @@
         'aria-label': 'Next image',
         'data-dir': '1',
       });
-      nextBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-chevron-compact-right"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M11 4l3 8l-3 8" /></svg>`;
+      nextBtn.appendChild(
+        createIcon(PATHS_NEXT, 'icon-tabler-chevron-compact-right'),
+      );
 
       stage.appendChild(prevBtn);
       stage.appendChild(canvas);
@@ -824,7 +1314,7 @@
 
       const ui = create('div', {
         id: 'spot-ui',
-        class: 'spot-ui spot-ui-hidden',
+        class: `spot-ui ${CLASS_UI_HIDDEN}`,
       });
       const topbar = create('div', { id: 'spot-topbar', class: 'spot-topbar' });
       const counter = create('div', {
@@ -838,7 +1328,7 @@
         class: 'spot-btn',
         'aria-label': 'Zoom out',
       });
-      zoomOut.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-zoom-out"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M7 10l6 0" /><path d="M21 21l-6 -6" /></svg>`;
+      zoomOut.appendChild(createIcon(PATHS_ZOOM_OUT, 'icon-tabler-zoom-out'));
 
       const zoomDisplay = create(
         'button',
@@ -847,7 +1337,7 @@
           class: 'spot-btn',
           'aria-label': 'Reset zoom',
         },
-        ['100%']
+        ['100%'],
       );
 
       const zoomIn = create('button', {
@@ -855,7 +1345,7 @@
         class: 'spot-btn',
         'aria-label': 'Zoom in',
       });
-      zoomIn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-zoom-in"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M10 10m-7 0a7 7 0 1 0 14 0a7 7 0 1 0 -14 0" /><path d="M7 10l6 0" /><path d="M10 7l0 6" /><path d="M21 21l-6 -6" /></svg>`;
+      zoomIn.appendChild(createIcon(PATHS_ZOOM_IN, 'icon-tabler-zoom-in'));
 
       const fullscreen = create('button', {
         id: 'spot-fullscreen',
@@ -868,7 +1358,7 @@
         class: 'spot-btn',
         'aria-label': 'Close',
       });
-      close.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon icon-tabler icons-tabler-outline icon-tabler-x"><path stroke="none" d="M0 0h24v24H0z" fill="none"/><path d="M18 6l-12 12" /><path d="M6 6l12 12" /></svg>`;
+      close.appendChild(createIcon(PATHS_CLOSE, 'icon-tabler-x'));
 
       controls.appendChild(zoomOut);
       controls.appendChild(zoomDisplay);
@@ -916,10 +1406,13 @@
         caption,
       };
 
+      // Cache fadeable nodes to avoid allocating a new array each render frame
+      this.#fadeableNodesCache = [bg, ui, prevBtn, nextBtn, img];
+
       // track whether pointer is over UI (topbar / caption / buttons / navs)
-      this._pointerOverUi = false;
+      this.#pointerOverUi = false;
       // counter to avoid flicker when moving between tracked elements
-      this._pointerOverUiCount = 0;
+      this.#pointerOverUiCount = 0;
 
       // Elements to track: nav buttons, caption, topbar and all .spot-btn
       // Note: do NOT track this.nodes.ui because it covers the whole screen and would prevent hiding
@@ -933,62 +1426,74 @@
       ].filter(Boolean);
 
       const onEnter = () => {
-        this._pointerOverUiCount = (this._pointerOverUiCount || 0) + 1;
-        this._pointerOverUi = true;
-        this._showUiImmediate();
+        this.#pointerOverUiCount = (this.#pointerOverUiCount || 0) + 1;
+        this.#pointerOverUi = true;
+        this.#showUiImmediate();
       };
       const onLeave = () => {
-        this._pointerOverUiCount = Math.max(
+        this.#pointerOverUiCount = Math.max(
           0,
-          (this._pointerOverUiCount || 0) - 1
+          (this.#pointerOverUiCount || 0) - 1,
         );
-        if (this._pointerOverUiCount === 0) {
-          this._pointerOverUi = false;
-          this._scheduleUiHide();
+        if (this.#pointerOverUiCount === 0) {
+          this.#pointerOverUi = false;
+          this.#scheduleUiHide();
         }
       };
 
       trackEls.forEach((el) => {
-        el.addEventListener('pointerenter', onEnter);
-        el.addEventListener('pointerleave', onLeave);
+        this.#addManagedListener(el, 'pointerenter', onEnter);
+        this.#addManagedListener(el, 'pointerleave', onLeave);
       });
 
       // Events
-      this.nodes.closeBtn.addEventListener('click', () => this.close());
-      this.nodes.bg.addEventListener('click', () => this.close());
-      this.nodes.prevBtn.addEventListener('click', () => this.prev());
-      this.nodes.nextBtn.addEventListener('click', () => this.next());
-      this.nodes.zoomIn.addEventListener('click', () =>
-        this._zoomBy(ZOOM_FACTOR)
+      this.#addManagedListener(this.nodes.closeBtn, 'click', () =>
+        this.close(),
       );
-      this.nodes.zoomOut.addEventListener('click', () =>
-        this._zoomBy(1 / ZOOM_FACTOR)
+      this.#addManagedListener(this.nodes.bg, 'click', () => this.close());
+      this.#addManagedListener(this.nodes.prevBtn, 'click', () => this.prev());
+      this.#addManagedListener(this.nodes.nextBtn, 'click', () => this.next());
+      this.#addManagedListener(this.nodes.zoomIn, 'click', () =>
+        this.#zoomBy(ZOOM_FACTOR),
       );
-      this.nodes.zoomDisplay.addEventListener('click', () => this._resetZoom());
-      this.nodes.fullscreenBtn.addEventListener('click', () =>
-        this._toggleFullscreen()
+      this.#addManagedListener(this.nodes.zoomOut, 'click', () =>
+        this.#zoomBy(1 / ZOOM_FACTOR),
       );
-      overlay.addEventListener('pointermove', () => this._handleUserActivity());
-      overlay.addEventListener('pointerdown', () => this._handleUserActivity());
-      overlay.addEventListener('touchstart', () => this._handleUserActivity(), {
-        passive: true,
-      });
-      this._updateFullscreenButton();
+      this.#addManagedListener(this.nodes.zoomDisplay, 'click', () =>
+        this.#resetZoom(),
+      );
+      this.#addManagedListener(this.nodes.fullscreenBtn, 'click', () =>
+        this.#toggleFullscreen(),
+      );
+      this.#addManagedListener(overlay, 'pointermove', () =>
+        this.#handleUserActivity(),
+      );
+      this.#addManagedListener(overlay, 'pointerdown', () =>
+        this.#handleUserActivity(),
+      );
+      this.#addManagedListener(
+        overlay,
+        'touchstart',
+        () => this.#handleUserActivity(),
+        { passive: true },
+      );
+      this.#updateFullscreenButton();
 
       // Prevent scroll behind overlay
-      overlay.addEventListener(
+      this.#addManagedListener(
+        overlay,
         'wheel',
         (e) => {
-          if (this.state.open && this._isPointerOverStage(e)) {
+          if (this.state.open && this.#isPointerOverStage(e)) {
             e.preventDefault();
           }
         },
-        { passive: false }
+        { passive: false },
       );
     }
 
     // check if event target is inside stage so we can handle wheel pan vs page scroll
-    _isPointerOverStage(e) {
+    #isPointerOverStage(e) {
       const rect = this.nodes.canvas.getBoundingClientRect();
       return (
         e.clientX >= rect.left &&
@@ -998,81 +1503,96 @@
       );
     }
 
-    _bindGlobalListeners() {
+    #bindGlobalListeners() {
       // Keyboard
-      window.addEventListener('keydown', (e) => this._handleKeydown(e));
+      this.#addManagedListener(window, 'keydown', (e) =>
+        this.#handleKeydown(e),
+      );
 
       // Wheel to zoom (if pointer over image)
-      this.nodes.canvas.addEventListener(
+      this.#addManagedListener(
+        this.nodes.canvas,
         'wheel',
-        (e) => this._handleWheelEvent(e),
+        (e) => this.#handleWheelEvent(e),
         {
           passive: false,
-        }
+        },
       );
       // Also listen on overlay for calibration events if they bubble up or occur outside canvas
-      this.nodes.overlay.addEventListener(
+      this.#addManagedListener(
+        this.nodes.overlay,
         'wheel',
         (e) => {
           if (this.calibrationActive) {
-            this._handleCalibrationWheel(e);
+            this.#handleCalibrationWheel(e);
           }
         },
-        { passive: false }
+        { passive: false },
       );
 
       // Drag image (pan)
-      this.nodes.imgNode.addEventListener('pointerdown', (e) => {
+      this.#addManagedListener(this.nodes.imgNode, 'pointerdown', (e) => {
         if (!this.state.open) {
           return;
         }
-        this._handleUserActivity();
+        this.#handleUserActivity();
         if (!e.isPrimary) {
           return;
         }
-        this._dragPointerId = e.pointerId;
-        this._dragLast.x = e.clientX;
-        this._dragLast.y = e.clientY;
-        this._dragStart = { x: e.clientX, y: e.clientY };
-        this._isVerticalSwipe = false;
+        this.#dragPointerId = e.pointerId;
+        this.#dragLast.x = e.clientX;
+        this.#dragLast.y = e.clientY;
+        this.#dragStart = { x: e.clientX, y: e.clientY };
+        this.#isVerticalSwipe = false;
         try {
           this.nodes.imgNode.setPointerCapture(e.pointerId);
         } catch (err) {
           this._reportError('setPointerCapture', err);
         }
       });
-      window.addEventListener('pointermove', (e) => this._handlePointerMove(e));
-      window.addEventListener('pointerup', (e) => {
-        if (this._dragPointerId === e.pointerId) {
-          if (this._isVerticalSwipe) {
-            const totalDy = e.clientY - this._dragStart.y;
-            if (totalDy > SWIPE_DOWN_THRESHOLD) {
-              this.close();
-            } else {
-              this.state.translateY = 0;
-              this._constrainAndSync();
-              this._startRenderLoop();
+      this.#addManagedListener(
+        window,
+        'pointermove',
+        (e) => this.#handlePointerMove(e),
+        {},
+      );
+      this.#addManagedListener(
+        window,
+        'pointerup',
+        (e) => {
+          if (this.#dragPointerId === e.pointerId) {
+            if (this.#isVerticalSwipe) {
+              const totalDy = e.clientY - this.#dragStart.y;
+              if (totalDy > SWIPE_DOWN_THRESHOLD) {
+                this.close();
+              } else {
+                this.state.translateY = 0;
+                this.#constrainAndSync();
+                this.#startRenderLoop();
+              }
+              this.#isVerticalSwipe = false;
             }
-            this._isVerticalSwipe = false;
+            try {
+              this.nodes.imgNode.releasePointerCapture(e.pointerId);
+            } catch (err) {
+              this._reportError('releasePointerCapture', err);
+            }
+            this.#dragPointerId = null;
           }
-          try {
-            this.nodes.imgNode.releasePointerCapture(e.pointerId);
-          } catch (err) {
-            this._reportError('releasePointerCapture', err);
-          }
-          this._dragPointerId = null;
-        }
-      });
+        },
+        {},
+      );
 
       // Touch swipes: detect horizontal swipe when at default zoom to navigate
       this.touchStart = null;
-      this.nodes.canvas.addEventListener(
+      this.#addManagedListener(
+        this.nodes.canvas,
         'touchstart',
         (e) => {
           if (!this.state.open) {
             return;
           }
-          this._handleUserActivity();
+          this.#handleUserActivity();
           if (e.touches.length === 1) {
             this.touchStart = {
               x: e.touches[0].clientX,
@@ -1083,33 +1603,40 @@
             this.touchStart = null;
           }
         },
-        { passive: true }
+        { passive: true },
       );
-      this.nodes.canvas.addEventListener(
+      this.#addManagedListener(
+        this.nodes.canvas,
         'touchend',
-        (e) => this._handleTouchEnd(e),
-        { passive: true }
+        (e) => this.#handleTouchEnd(e),
+        { passive: true },
       );
 
       // Pinch-to-zoom using Pointer Events
-      this._bindPinch();
+      this.#bindPinch();
 
-      const ro = new ResizeObserver(() => {
-        if (!this.state.open) {
-          return;
-        }
-        this._fitImageToViewport();
-        this._applyTransform({ immediate: true });
-      });
-      ro.observe(this.nodes.canvas);
+      if (typeof ResizeObserver === 'function') {
+        this.#resizeObserver = new ResizeObserver(() => {
+          if (!this.state.open) {
+            return;
+          }
+          this.#fitImageToViewport();
+          this.#applyTransform({ immediate: true });
+        });
+        this.#resizeObserver.observe(this.nodes.canvas);
+      }
 
-      document.addEventListener('fullscreenchange', () =>
-        this._syncFullscreenState()
+      this.#addManagedListener(
+        document,
+        'fullscreenchange',
+        () => this.#syncFullscreenState(),
+        {},
       );
 
       // Safari Trackpad Gesture (Pinch)
       let gestureLastScale = 1;
-      this.nodes.canvas.addEventListener(
+      this.#addManagedListener(
+        this.nodes.canvas,
         'gesturestart',
         (e) => {
           if (!this.state.open) {
@@ -1120,11 +1647,12 @@
             return;
           }
           gestureLastScale = 1;
-          this._isPinching = true;
+          this.#isPinching = true;
         },
-        { passive: false }
+        { passive: false },
       );
-      this.nodes.canvas.addEventListener(
+      this.#addManagedListener(
+        this.nodes.canvas,
         'gesturechange',
         (e) => {
           if (!this.state.open) {
@@ -1139,35 +1667,48 @@
           if (delta !== 1) {
             // Apply moderation to the delta
             const moderatedDelta = 1 + (delta - 1) * PINCH_MODERATION;
-            this._zoomAtPoint(moderatedDelta, e.clientX, e.clientY);
+            this.#zoomAtPoint(moderatedDelta, e.clientX, e.clientY);
           }
         },
-        { passive: false }
+        { passive: false },
       );
-      this.nodes.canvas.addEventListener(
+      this.#addManagedListener(
+        this.nodes.canvas,
         'gestureend',
         () => {
           if (this.pointers.size > 0) {
             return;
           }
-          this._isPinching = false;
+          this.#isPinching = false;
         },
-        { passive: false }
+        { passive: false },
       );
     }
 
-    _handleWheelEvent(e) {
+    #handleWheelEvent(e) {
       if (!this.state.open) {
         return;
       }
 
-      const source = this._determineWheelSource(e);
+      // DoS protection: Rate limit wheel events to prevent excessive CPU usage
+      const now = Date.now();
+      if (
+        this.#lastWheelEventProcessed &&
+        now - this.#lastWheelEventProcessed < FPS_INTERVAL
+      ) {
+        // ~60fps limit
+        // Too frequent events, ignore to prevent DoS
+        return;
+      }
+      if (!this.#shouldProcessEvent(e)) {
+        return;
+      }
+
+      const source = this.#determineWheelSource(e);
       const isTrackpad = source === 'trackpad';
 
       if (this.calibrationActive) {
-        if (isTrackpad) {
-          this._handleCalibrationWheel(e);
-        }
+        this.#processCalibrationWheel(e);
         return;
       }
 
@@ -1178,31 +1719,83 @@
 
       // Mouse wheel handling: ctrl+wheel = zoom, plain wheel = navigate images
       if (!isTrackpad) {
-        e.preventDefault();
-        this._handleUserActivity();
-        if (e.ctrlKey) {
-          // Ctrl+wheel = zoom
-          this._handleWheelZoom(e, false);
-        } else {
-          // Plain mouse wheel = navigate images
-          this._handleMouseWheelNavigation(e.deltaY);
-        }
+        this.#processNonTrackpadWheel(e);
         return;
       }
 
-      if (isTrackpad && this.needsCalibration && !this.calibrationActive) {
-        e.preventDefault();
-        this._showCalibration('trackpad');
-        return;
-      }
-
-      this._handleTrackpadWheel(e);
+      this.#processTrackpadWheel(e, isTrackpad);
     }
 
-    _handleTrackpadWheel(e) {
+    /**
+     * Determines if the wheel event should be processed based on DoS protection
+     * @param {WheelEvent} e - The wheel event
+     * @returns {boolean} Whether the event should be processed
+     * @private
+     */
+    #shouldProcessEvent(e) {
       const now = Date.now();
-      const timeSinceLastNav = now - (this._lastSwipeNavTime || 0);
-      const timeSinceLastWheel = now - (this._lastWheelEventTime || 0);
+      if (
+        this.#lastWheelEventProcessed &&
+        now - this.#lastWheelEventProcessed < FPS_INTERVAL
+      ) {
+        // ~60fps limit
+        return false; // Too frequent events, ignore to prevent DoS
+      }
+      this.#lastWheelEventProcessed = now;
+      return true;
+    }
+
+    /**
+     * Handles the calibration wheel event specifically
+     * @param {WheelEvent} e - The wheel event
+     * @private
+     */
+    #processCalibrationWheel(e) {
+      const source = this.#determineWheelSource(e);
+      const isTrackpad = source === 'trackpad';
+
+      if (isTrackpad) {
+        this.#handleCalibrationWheel(e);
+      }
+    }
+
+    /**
+     * Processes non-trackpad wheel events
+     * @param {WheelEvent} e - The wheel event
+     * @private
+     */
+    #processNonTrackpadWheel(e) {
+      e.preventDefault();
+      this.#handleUserActivity();
+      if (e.ctrlKey) {
+        // Ctrl+wheel = zoom
+        this.#handleWheelZoom(e, false);
+      } else {
+        // Plain mouse wheel = navigate images
+        this.#handleMouseWheelNavigation(e.deltaY);
+      }
+    }
+
+    /**
+     * Processes trackpad wheel events
+     * @param {WheelEvent} e - The wheel event
+     * @param {boolean} isTrackpad - Whether the event is from a trackpad
+     * @private
+     */
+    #processTrackpadWheel(e, isTrackpad) {
+      if (isTrackpad && this.needsCalibration && !this.calibrationActive) {
+        e.preventDefault();
+        this.#showCalibration('trackpad');
+        return;
+      }
+
+      this.#handleTrackpadWheel(e);
+    }
+
+    #handleTrackpadWheel(e) {
+      const now = Date.now();
+      const timeSinceLastNav = now - (this.#lastSwipeNavTime || 0);
+      const timeSinceLastWheel = now - (this.#lastWheelEventTime || 0);
 
       // If mode was locked after a swipe navigation, only reset when:
       // 1. Debounce period has passed (500ms since last nav), AND
@@ -1210,48 +1803,48 @@
       //    OR we detect a new gesture start (acceleration in deltaX)
       // This prevents unlocking during continuous fast swiping with brief gaps,
       // but allows rapid intentional swipes.
-      if (this._swipeModeLocked) {
+      if (this.#swipeModeLocked) {
         const absDeltaX = Math.abs(e.deltaX);
         // Check for significant acceleration (new swipe start)
         // We use a threshold of 5 to filter out noise/minor fluctuations in inertia
         const isAcceleration =
           absDeltaX >
-          (this._lastWheelDeltaX || 0) + WHEEL_ACCELERATION_THRESHOLD;
+          (this.#lastWheelDeltaX || 0) + WHEEL_ACCELERATION_THRESHOLD;
 
         if (
           timeSinceLastNav >= SWIPE_DEBOUNCE &&
           (timeSinceLastWheel > UNLOCK_WHEEL_GAP || isAcceleration)
         ) {
-          this._swipeModeLocked = false;
-          this._wheelMode = null;
-          this._wheelSwipeAccum = 0;
+          this.#swipeModeLocked = false;
+          this.#wheelMode = null;
+          this.#wheelSwipeAccum = 0;
         }
       }
-      this._lastWheelEventTime = now;
-      this._lastWheelDeltaX = Math.abs(e.deltaX);
+      this.#lastWheelEventTime = now;
+      this.#lastWheelDeltaX = Math.abs(e.deltaX);
 
-      this._handleUserActivity();
-      const mode = this._detectWheelMode(e);
+      this.#handleUserActivity();
+      const mode = this.#detectWheelMode(e);
       e.preventDefault();
       if (mode === 'swipe') {
-        this._handleSwipeWheel(e.deltaX);
+        this.#handleSwipeWheel(e.deltaX);
       } else {
-        this._handleWheelZoom(e, true);
+        this.#handleWheelZoom(e, true);
       }
-      this._scheduleWheelGestureReset();
+      this.#scheduleWheelGestureReset();
     }
 
-    _commitSwipeNavigation() {
-      this._lastSwipeNavTime = Date.now();
-      this._wheelSwipeAccum = 0;
+    #commitSwipeNavigation() {
+      this.#lastSwipeNavTime = Date.now();
+      this.#wheelSwipeAccum = 0;
       // Lock mode to 'zoom' to prevent inertia from re-triggering
-      this._wheelMode = 'zoom';
-      this._swipeModeLocked = true;
+      this.#wheelMode = 'zoom';
+      this.#swipeModeLocked = true;
     }
 
-    _handleSwipeWheel(deltaX) {
+    #handleSwipeWheel(deltaX) {
       const now = Date.now();
-      const timeSinceLastNav = now - (this._lastSwipeNavTime || 0);
+      const timeSinceLastNav = now - (this.#lastSwipeNavTime || 0);
 
       // During debounce period, don't accumulate
       if (timeSinceLastNav < SWIPE_DEBOUNCE) {
@@ -1263,12 +1856,12 @@
         dx = -dx;
       }
 
-      this._wheelSwipeAccum += dx;
-      if (this._wheelSwipeAccum > TRACKPAD_SWIPE_THRESHOLD) {
-        this._commitSwipeNavigation();
+      this.#wheelSwipeAccum += dx;
+      if (this.#wheelSwipeAccum > TRACKPAD_SWIPE_THRESHOLD) {
+        this.#commitSwipeNavigation();
         this.next();
-      } else if (this._wheelSwipeAccum < -TRACKPAD_SWIPE_THRESHOLD) {
-        this._commitSwipeNavigation();
+      } else if (this.#wheelSwipeAccum < -TRACKPAD_SWIPE_THRESHOLD) {
+        this.#commitSwipeNavigation();
         this.prev();
       }
     }
@@ -1278,10 +1871,10 @@
      * Scroll down = next image, scroll up = previous image.
      * Uses debouncing to prevent rapid navigation.
      */
-    _handleMouseWheelNavigation(deltaY) {
+    #handleMouseWheelNavigation(deltaY) {
       // Debounce rapid scrolls
       const now = Date.now();
-      if (now - (this._lastMouseWheelNav || 0) < MOUSE_WHEEL_NAV_DEBOUNCE) {
+      if (now - (this.#lastMouseWheelNav || 0) < MOUSE_WHEEL_NAV_DEBOUNCE) {
         return;
       }
 
@@ -1290,7 +1883,7 @@
         return;
       }
 
-      this._lastMouseWheelNav = now;
+      this.#lastMouseWheelNav = now;
 
       if (deltaY > 0) {
         this.next();
@@ -1299,13 +1892,13 @@
       }
     }
 
-    _detectWheelMode(event) {
-      if (this._wheelMode) {
-        return this._wheelMode;
+    #detectWheelMode(event) {
+      if (this.#wheelMode) {
+        return this.#wheelMode;
       }
       if (event.ctrlKey) {
-        this._wheelMode = 'zoom';
-        return this._wheelMode;
+        this.#wheelMode = 'zoom';
+        return this.#wheelMode;
       }
       const absX = Math.abs(event.deltaX);
       const absY = Math.abs(event.deltaY);
@@ -1321,21 +1914,21 @@
         (absY < WHEEL_Y_THRESHOLD && absX > WHEEL_Y_THRESHOLD); // Only treat as horizontal if X is significant
 
       if (horizontal) {
-        this._wheelMode = 'swipe';
+        this.#wheelMode = 'swipe';
       } else if (absY > absX) {
         // Clearly vertical
-        this._wheelMode = 'zoom';
+        this.#wheelMode = 'zoom';
       } else {
         // Ambiguous (e.g. absX > absY but diff is small)
         // Don't lock. Return 'zoom' to prevent default but keep listening.
         return 'zoom';
       }
-      return this._wheelMode;
+      return this.#wheelMode;
     }
 
-    _handleWheelZoom(event, isTrackpad) {
+    #handleWheelZoom(event, isTrackpad) {
       // If pinching via gesture, ignore wheel
-      if (this._isPinching) {
+      if (this.#isPinching) {
         return;
       }
 
@@ -1345,7 +1938,7 @@
         const effectiveSensitivity =
           TRACKPAD_PINCH_SENSITIVITY * PINCH_MODERATION;
         const factor = 1 + delta * effectiveSensitivity;
-        this._zoomAtPoint(factor, event.clientX, event.clientY);
+        this.#zoomAtPoint(factor, event.clientX, event.clientY);
         return;
       }
 
@@ -1361,106 +1954,106 @@
         // Only trigger if vertical movement is dominant and significant
         // This prevents accidental vertical swipes when trying to swipe horizontally
         if (Math.abs(deltaY) > Math.abs(event.deltaX) && Math.abs(deltaY) > 0) {
-          this._isVerticalSwipe = true;
-          this._swipeIntent = true;
-          this._trackpadSwipeToClose = true; // Track that this is a trackpad-initiated close gesture
+          this.#isVerticalSwipe = true;
+          this.#swipeIntent = true;
+          this.#trackpadSwipeToClose = true; // Track that this is a trackpad-initiated close gesture
           // Use raw delta values - no multiplier for natural feel
           this.state.translateY += deltaY;
           // Prevent moving up (negative translateY) during swipe-to-close
           if (this.state.translateY < 0) {
             this.state.translateY = 0;
           }
-          this._startRenderLoop();
+          this.#startRenderLoop();
         }
       }
     }
 
-    _scheduleWheelGestureReset() {
-      clearTimeout(this._wheelSwipeTimer);
-      this._wheelSwipeTimer = setTimeout(
-        () => this._endWheelGesture(),
-        WHEEL_RESET_DELAY
+    #scheduleWheelGestureReset() {
+      clearTimeout(this.#wheelSwipeTimer);
+      this.#wheelSwipeTimer = setTimeout(
+        () => this.#endWheelGesture(),
+        WHEEL_RESET_DELAY,
       );
     }
 
-    _endWheelGesture() {
-      if (this._wheelSwipeTimer) {
-        clearTimeout(this._wheelSwipeTimer);
-        this._wheelSwipeTimer = null;
+    #endWheelGesture() {
+      if (this.#wheelSwipeTimer) {
+        clearTimeout(this.#wheelSwipeTimer);
+        this.#wheelSwipeTimer = null;
       }
-      if (this._isVerticalSwipe) {
+      if (this.#isVerticalSwipe) {
         if (this.state.translateY > SWIPE_DOWN_THRESHOLD) {
           this.close();
         } else {
           this.state.translateY = 0;
-          this._constrainAndSync();
-          this._startRenderLoop();
+          this.#constrainAndSync();
+          this.#startRenderLoop();
         }
-        this._isVerticalSwipe = false;
-        this._trackpadSwipeToClose = false;
+        this.#isVerticalSwipe = false;
+        this.#trackpadSwipeToClose = false;
       }
-      this._wheelSwipeAccum = 0;
+      this.#wheelSwipeAccum = 0;
       // Don't reset wheelMode if we're in a swipe-locked state (protecting against inertia)
       // The wheel handler will reset it when debounce period ends
-      if (!this._swipeModeLocked) {
-        this._wheelMode = null;
+      if (!this.#swipeModeLocked) {
+        this.#wheelMode = null;
       }
     }
 
-    _handleUserActivity() {
+    #handleUserActivity() {
       if (!this.state.open) {
         return;
       }
-      this._showUiImmediate();
-      this._scheduleUiHide();
+      this.#showUiImmediate();
+      this.#scheduleUiHide();
     }
 
-    _scheduleUiHide() {
-      clearTimeout(this._uiHideTimer);
-      this._uiHideTimer = setTimeout(() => {
-        if (this._pointerOverUi) {
+    #scheduleUiHide() {
+      clearTimeout(this.#uiHideTimer);
+      this.#uiHideTimer = setTimeout(() => {
+        if (this.#pointerOverUi) {
           // still over UI — reschedule hide
-          this._scheduleUiHide();
+          this.#scheduleUiHide();
         } else {
-          this._hideUi();
+          this.#hideUi();
         }
-      }, this._uiHideDelay);
+      }, this.#uiHideDelay);
     }
 
-    _showUiImmediate() {
-      if (!this.nodes?.ui) {
+    #showUiImmediate() {
+      if (!this.nodes || !this.nodes.ui) {
         return;
       }
-      this.nodes.ui.classList.add('spot-ui-visible');
-      this.nodes.ui.classList.remove('spot-ui-hidden');
+      this.nodes.ui.classList.add(CLASS_UI_VISIBLE);
+      this.nodes.ui.classList.remove(CLASS_UI_HIDDEN);
       // ensure navs are visible when UI is shown
       if (this.overlay) {
-        this.overlay.classList.remove('spot-nav-hidden');
+        this.overlay.classList.remove(CLASS_NAV_HIDDEN);
       }
     }
 
-    _hideUi() {
-      if (!this.nodes?.ui) {
+    #hideUi() {
+      if (!this.nodes || !this.nodes.ui) {
         return;
       }
-      this.nodes.ui.classList.add('spot-ui-hidden');
-      this.nodes.ui.classList.remove('spot-ui-visible');
+      this.nodes.ui.classList.add(CLASS_UI_HIDDEN);
+      this.nodes.ui.classList.remove(CLASS_UI_VISIBLE);
       // hide navs with outward animation
       if (this.overlay) {
-        this.overlay.classList.add('spot-nav-hidden');
+        this.overlay.classList.add(CLASS_NAV_HIDDEN);
       }
     }
 
-    _toggleFullscreen() {
-      this._handleUserActivity();
+    #toggleFullscreen() {
+      this.#handleUserActivity();
       if (this.state.fullscreen) {
-        this._exitFullscreen();
+        this.#exitFullscreen();
       } else {
-        this._enterFullscreen();
+        this.#enterFullscreen();
       }
     }
 
-    _enterFullscreen() {
+    #enterFullscreen() {
       const target = this.overlay;
       if (!target || document.fullscreenElement === target) {
         return;
@@ -1471,49 +2064,57 @@
           res.catch(() => {});
         }
       }
-      this._syncFullscreenState();
+      this.#syncFullscreenState();
     }
 
-    _exitFullscreen() {
+    #exitFullscreen() {
       if (document.fullscreenElement && document.exitFullscreen) {
         const res = document.exitFullscreen();
         if (res && typeof res.catch === 'function') {
           res.catch(() => {});
         }
       }
-      this._syncFullscreenState();
+      this.#syncFullscreenState();
     }
 
-    _syncFullscreenState() {
+    #syncFullscreenState() {
       const isFull = document.fullscreenElement === this.overlay;
       this.state.fullscreen = Boolean(isFull);
-      this._updateFullscreenButton();
+      this.#updateFullscreenButton();
     }
 
-    _updateFullscreenButton() {
-      const btn = this.nodes?.fullscreenBtn;
+    #updateFullscreenButton() {
+      const btn = this.nodes && this.nodes.fullscreenBtn;
       if (!btn) {
         return;
       }
-      // Swap SVG icon depending on fullscreen state
-      btn.innerHTML = this.state.fullscreen ? SVG_MINIMIZE : SVG_MAXIMIZE;
+      // Swap icon
+      btn.textContent = ''; // clear
+      btn.appendChild(
+        createIcon(
+          this.state.fullscreen ? PATHS_MINIMIZE : PATHS_MAXIMIZE,
+          this.state.fullscreen
+            ? 'icon-tabler-arrows-minimize'
+            : 'icon-tabler-arrows-maximize',
+        ),
+      );
       btn.setAttribute(
         'aria-label',
-        this.state.fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'
+        this.state.fullscreen ? 'Exit fullscreen' : 'Enter fullscreen',
       );
       btn.setAttribute('aria-pressed', String(this.state.fullscreen));
     }
 
-    _animateSlide(direction, cb) {
-      this._handleUserActivity();
-      this._pendingSlideDir = direction || 0;
+    #animateSlide(direction, cb) {
+      this.#handleUserActivity();
+      this.#pendingSlideDir = direction || 0;
       if (typeof cb === 'function') {
         cb();
       }
     }
 
-    _playSlideIn(direction) {
-      const img = this.nodes?.imgNode;
+    #playSlideIn(direction) {
+      const img = this.nodes && this.nodes.imgNode;
       if (!img) {
         return;
       }
@@ -1539,23 +2140,25 @@
       });
     }
 
-    _bindPinch() {
+    #bindPinch() {
       let initialDistance = 0;
       const onPointerDown = (e) => {
         if (!this.state.open) {
           return;
         }
-        this._handleUserActivity();
-        this._swipeIntent = false;
-        this._trackpadSwipeToClose = false;
+        this.#handleUserActivity();
+        this.#swipeIntent = false;
+        this.#trackpadSwipeToClose = false;
         this.pointers.set(e.pointerId, e);
         if (this.pointers.size === POINTERS_COUNT) {
-          this._isPinching = true;
-          // calculate distance
-          const [p1, p2] = Array.from(this.pointers.values());
+          this.#isPinching = true;
+          // calculate distance - optimized: use iterator directly instead of Array.from()
+          const values = this.pointers.values();
+          const p1 = values.next().value;
+          const p2 = values.next().value;
           initialDistance = Math.hypot(
             p2.clientX - p1.clientX,
-            p2.clientY - p1.clientY
+            p2.clientY - p1.clientY,
           );
         }
       };
@@ -1565,31 +2168,32 @@
         }
         if (!this.state.open) {
           this.pointers.clear();
-          this._isPinching = false;
+          this.#isPinching = false;
           return;
         }
-        this._handleUserActivity();
+        this.#handleUserActivity();
         this.pointers.set(e.pointerId, e);
         if (this.pointers.size === POINTERS_COUNT) {
-          const [p1, p2] = Array.from(this.pointers.values());
+          // Optimized: use iterator directly instead of Array.from()
+          const values = this.pointers.values();
+          const p1 = values.next().value;
+          const p2 = values.next().value;
           const currentDistance = Math.hypot(
             p2.clientX - p1.clientX,
-            p2.clientY - p1.clientY
+            p2.clientY - p1.clientY,
           );
           if (initialDistance > 0) {
             const delta = currentDistance / initialDistance;
             initialDistance = currentDistance; // Update for next frame
-
             if (delta !== 1) {
               const sensitivity =
                 e.pointerType === 'touch'
                   ? PINCH_SENSITIVITY_TOUCH
                   : PINCH_MODERATION;
               const moderatedDelta = 1 + (delta - 1) * sensitivity;
-
               const cx = (p1.clientX + p2.clientX) * CENTER_OFFSET;
               const cy = (p1.clientY + p2.clientY) * CENTER_OFFSET;
-              this._zoomAtPoint(moderatedDelta, cx, cy);
+              this.#zoomAtPoint(moderatedDelta, cx, cy);
             }
           }
         }
@@ -1597,15 +2201,15 @@
       const onPointerUp = (e) => {
         this.pointers.delete(e.pointerId);
         if (this.pointers.size < POINTERS_COUNT) {
-          this._isPinching = false;
+          this.#isPinching = false;
           initialDistance = 0;
         }
       };
       // Attach to image node
-      this.nodes.canvas.addEventListener('pointerdown', onPointerDown);
-      window.addEventListener('pointermove', onPointerMove);
-      window.addEventListener('pointerup', onPointerUp);
-      window.addEventListener('pointercancel', onPointerUp);
+      this.#addManagedListener(this.nodes.canvas, 'pointerdown', onPointerDown);
+      this.#addManagedListener(window, 'pointermove', onPointerMove);
+      this.#addManagedListener(window, 'pointerup', onPointerUp);
+      this.#addManagedListener(window, 'pointercancel', onPointerUp);
     }
 
     /**
@@ -1614,38 +2218,141 @@
      * @param {number} [itemIndex=0] - Index of the item within the collection
      */
     openCollection(collectionIndex, itemIndex = 0) {
-      if (!this.collections[collectionIndex]) {
+      const safeCollectionIndex =
+        this.#sanitizeCollectionIndex(collectionIndex);
+      const safeItemIndex = this.#sanitizeCollectionIndex(itemIndex);
+
+      if (safeCollectionIndex === null) {
+        this._reportError(
+          'openCollection.collectionIndex',
+          new TypeError('collectionIndex must be a non-negative integer'),
+        );
         return;
       }
+      if (safeItemIndex === null) {
+        this._reportError(
+          'openCollection.itemIndex',
+          new TypeError('itemIndex must be a non-negative integer'),
+        );
+        return;
+      }
+
+      const collection = this.collections[safeCollectionIndex];
+      if (!collection) {
+        return;
+      }
+
+      // If the container has not been scanned yet (lazy loading), scan it now.
+      if (!collection.scanned) {
+        this.scanContainer(collection.container);
+      }
+
+      if (!collection.items[safeItemIndex]) {
+        return;
+      }
+
       this.state.open = true;
-      this.state.collectionIndex = collectionIndex;
-      this.state.itemIndex = itemIndex;
+      this.state.collectionIndex = safeCollectionIndex;
+      this.state.itemIndex = safeItemIndex;
       // UI is hidden by default, will show on user activity
-      this._showOverlay();
-      this._checkCalibration();
-      this._loadItem();
+      this.#showOverlay();
+      this.#checkCalibration();
+      this.#loadItem();
     }
 
-    _showOverlay() {
+    #showOverlay() {
       this.overlay.style.display = 'block';
-      this._lastFocused = document.activeElement;
+      this.#lastFocused = document.activeElement;
 
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
-          this.overlay.classList.add('spot-open');
+          this.overlay.classList.add(CLASS_OPEN);
           this.overlay.setAttribute('aria-hidden', 'false');
           document.documentElement.style.overflow = 'hidden';
           this.nodes.shell.focus();
 
-          if (this._uiShowTimer) {
-            clearTimeout(this._uiShowTimer);
+          if (this.#uiShowTimer) {
+            clearTimeout(this.#uiShowTimer);
           }
-          this._uiShowTimer = setTimeout(() => {
-            this._showUiImmediate();
-            this._scheduleUiHide();
+          this.#uiShowTimer = setTimeout(() => {
+            this.#showUiImmediate();
+            this.#scheduleUiHide();
           }, ANIMATION_DURATION);
         });
       });
+    }
+
+    /**
+     * Completely destroys the Spotlight instance and cleans up event listeners.
+     */
+    destroy() {
+      this.close();
+      if (this.#abortController) {
+        this.#abortController.abort();
+      }
+      this.#cleanupManagedListeners();
+      uninitAuto();
+
+      // Clean up manually attached listeners and DOM pollution
+      this.#trackedElements.forEach((ref) => {
+        const el = typeof ref.deref === 'function' ? ref.deref() : ref;
+        if (!el) {
+          return;
+        }
+
+        // Remove listener
+        if (this.#attachedListeners.has(el)) {
+          el.removeEventListener('click', this.#attachedListeners.get(el));
+        }
+
+        // Clean up datasets and cursor
+        delete el.dataset.spotlightCollection;
+        delete el.dataset.spotlightIndex;
+        if (el.style.cursor === 'zoom-in') {
+          el.style.cursor = '';
+        }
+      });
+
+      this.#trackedElements.clear();
+      this.#scannedImages =
+        typeof WeakSet === 'function' ? new WeakSet() : new Set();
+      this.#attachedListeners =
+        typeof WeakMap === 'function' ? new WeakMap() : new Map();
+      if (this.#observer) {
+        this.#observer.disconnect();
+        this.#observer = null;
+      }
+      if (this.#resizeObserver) {
+        this.#resizeObserver.disconnect();
+        this.#resizeObserver = null;
+      }
+      // Clear all pending timers
+      this.#pendingTimers.forEach((id) => clearTimeout(id));
+      this.#pendingTimers.clear();
+      if (this.overlay && this.overlay.parentNode) {
+        this.overlay.parentNode.removeChild(this.overlay);
+      }
+
+      this.#pendingCalibrationListener = null;
+      this.#calibrationKeydownHandler = null;
+      this.#calibrationFocusable = null;
+      this.#lastFocusedBeforeCalibration = null;
+      this.#lastFocused = null;
+      this.#uiShowTimer = null;
+      this.#uiHideTimer = null;
+      this.#wheelSwipeTimer = null;
+      if (this.#weakRefCleanupTimer) {
+        clearTimeout(this.#weakRefCleanupTimer);
+        this.#weakRefCleanupTimer = null;
+      }
+      if (__spotlight_instance === this) {
+        __spotlight_instance = null;
+      }
+      this.liveRegion = null;
+      this.#fadeableNodesCache = null;
+      this.overlay = null;
+      this.nodes = null;
+      this.#cssInjected = false;
     }
 
     /**
@@ -1656,41 +2363,44 @@
       if (!this.state.open) {
         return;
       }
-      this.overlay.classList.remove('spot-open');
+      const overlay = this.overlay;
+      const lastFocused = this.#lastFocused;
+      this.overlay.classList.remove(CLASS_OPEN);
       this.overlay.setAttribute('aria-hidden', 'true');
       document.documentElement.style.overflow = '';
       this.state.open = false;
       this.state.fullscreen = false;
-      this._exitFullscreen();
-      this._updateFullscreenButton();
-      clearTimeout(this._uiHideTimer);
-      clearTimeout(this._wheelSwipeTimer);
-      if (this._uiShowTimer) {
-        clearTimeout(this._uiShowTimer);
+      this.#exitFullscreen();
+      this.#updateFullscreenButton();
+      clearTimeout(this.#uiHideTimer);
+      clearTimeout(this.#wheelSwipeTimer);
+      if (this.#uiShowTimer) {
+        clearTimeout(this.#uiShowTimer);
       }
-      this._wheelSwipeAccum = 0;
-      this._wheelMode = null;
-      this._lastSwipeNavTime = 0;
-      this._swipeModeLocked = false;
-      this._lastWheelDeltaX = 0;
-      this._pendingSlideDir = 0;
-      this._hideUi();
-      if (this._pendingCalibrationListener) {
-        window.removeEventListener('wheel', this._pendingCalibrationListener);
-        this._pendingCalibrationListener = null;
+      this.#wheelSwipeAccum = 0;
+      this.#wheelMode = null;
+      this.#lastSwipeNavTime = 0;
+      this.#swipeModeLocked = false;
+      this.#lastWheelDeltaX = 0;
+      this.#pendingSlideDir = 0;
+      this.#hideUi();
+      if (this.#pendingCalibrationListener) {
+        window.removeEventListener('wheel', this.#pendingCalibrationListener);
+        this.#pendingCalibrationListener = null;
       }
       if (this.calibrationActive && this.nodes.calibration) {
-        this._removeCalibrationNodes();
+        this.#cleanupCalibrationHandlers();
+        this.#removeCalibrationNodes();
         this.calibrationActive = false;
         this.calibrationSource = null;
       }
       // small delay to allow animation
-      setTimeout(() => {
-        if (!this.state.open) {
-          this.overlay.style.display = 'none';
+      this.#addTimer(() => {
+        if (!this.state.open && overlay) {
+          overlay.style.display = 'none';
         }
-        if (this._lastFocused) {
-          this._lastFocused.focus();
+        if (lastFocused && typeof lastFocused.focus === 'function') {
+          lastFocused.focus();
         }
       }, CLOSE_DELAY);
     }
@@ -1699,32 +2409,35 @@
      * Navigates to the previous image in the current collection.
      */
     prev() {
-      const c = this.collections[this.state.collectionIndex];
-      if (!c || this.state.itemIndex <= 0) {
+      const currentCollection = this.collections[this.state.collectionIndex];
+      if (!currentCollection || this.state.itemIndex <= 0) {
         return;
       }
       this.state.itemIndex--;
-      this._animateSlide(-1, () => this._loadItem());
+      this.#animateSlide(-1, () => this.#loadItem());
     }
 
     /**
      * Navigates to the next image in the current collection.
      */
     next() {
-      const c = this.collections[this.state.collectionIndex];
-      if (!c || this.state.itemIndex >= c.items.length - 1) {
+      const currentCollection = this.collections[this.state.collectionIndex];
+      if (
+        !currentCollection ||
+        this.state.itemIndex >= currentCollection.items.length - 1
+      ) {
         return;
       }
       this.state.itemIndex++;
-      this._animateSlide(1, () => this._loadItem());
+      this.#animateSlide(1, () => this.#loadItem());
     }
 
-    _updateNavVisibility() {
-      const c = this.collections[this.state.collectionIndex];
-      if (!c) {
+    #updateNavVisibility() {
+      const currentCollection = this.collections[this.state.collectionIndex];
+      if (!currentCollection) {
         return;
       }
-      const count = c.items.length;
+      const count = currentCollection.items.length;
       const index = this.state.itemIndex;
 
       if (this.nodes.prevBtn) {
@@ -1735,35 +2448,44 @@
       }
     }
 
-    _loadItem() {
-      const coll = this.collections[this.state.collectionIndex];
-      if (!coll) {
+    #loadItem() {
+      const currentCollection = this.collections[this.state.collectionIndex];
+      if (!currentCollection) {
         return;
       }
-      const item = coll.items[this.state.itemIndex];
+      const item = currentCollection.items[this.state.itemIndex];
       if (!item) {
         return;
       }
 
       // Capture requested slide direction immediately so rapid successive
       // navigations do not lose the intended animation direction.
-      const slideDir = this._pendingSlideDir || 0;
-      this._pendingSlideDir = 0;
+      const slideDir = this.#pendingSlideDir || 0;
+      this.#pendingSlideDir = 0;
 
-      this._resetRenderState();
-      this._updateNavVisibility();
+      this.#resetRenderState();
+      this.#updateNavVisibility();
 
       // show spinner while loading
       this.nodes.imgNode.style.opacity = '0';
       this.nodes.imgNode.src = '';
       this.nodes.counter.textContent = `${this.state.itemIndex + 1} / ${
-        coll.items.length
+        currentCollection.items.length
       }`;
-      this._updateCaption(item.caption);
+      this.#updateCaption(item.caption);
       if (this.liveRegion) {
         this.liveRegion.textContent = `Image ${this.state.itemIndex + 1} of ${
-          coll.items.length
+          currentCollection.items.length
         }${item.caption ? ': ' + item.caption : ''}`;
+      }
+
+      const safeSrc = this.#getSafeImageUrl(item.src);
+      if (!safeSrc) {
+        this.#updateCaption('Invalid image URL');
+        if (this.liveRegion) {
+          this.liveRegion.textContent = 'Invalid image URL blocked for safety.';
+        }
+        return;
       }
 
       // Load image directly into the overlay image node. This is simpler
@@ -1779,33 +2501,39 @@
       node.onload = () => {
         // Fit by height and show
         requestAnimationFrame(() => {
-          this._fitImageToViewport();
-          this._applyTransform({ immediate: true });
-          this._playSlideIn(slideDir);
+          this.#fitImageToViewport();
+          this.#applyTransform({ immediate: true });
+          this.#playSlideIn(slideDir);
         });
       };
 
       node.onerror = () => {
         node.src = '';
-        this._updateCaption('Failed to load image');
+        this.#updateCaption('Failed to load image');
         node.style.opacity = '1';
       };
 
       // Trigger load
-      node.src = item.src;
-      if (/\.svg($|\?)/i.test(item.src)) {
+      node.src = safeSrc;
+      if (/\.svg($|\?)/i.test(safeSrc)) {
         node.classList.add('spot-svg');
+        // Security: SVG files should be served with strict CSP headers.
+        // For additional protection, consider:
+        // 1. Using CSP: img-src 'self' data:;
+        // 2. Sanitizing SVG content server-side before serving
+        // 3. Converting SVG to PNG/CBW on the server
       } else {
         node.classList.remove('spot-svg');
       }
-
       if (node.complete && node.naturalWidth) {
         // cached image won't fire onload
-        node.onload?.();
+        if (typeof node.onload === 'function') {
+          node.onload();
+        }
       }
     }
 
-    _updateCaption(text) {
+    #updateCaption(text) {
       if (!this.nodes || !this.nodes.caption) {
         return;
       }
@@ -1823,7 +2551,7 @@
       }
     }
 
-    _resetRenderState() {
+    #resetRenderState() {
       this.state.scale = 1;
       this.state.baseScale = 1;
       this.state.translateX = 0;
@@ -1831,92 +2559,91 @@
       this.renderState.scale = 1;
       this.renderState.translateX = 0;
       this.renderState.translateY = 0;
-      this._renderActive = false;
-      this._resetNodeOpacities();
-      if (this._rafId) {
-        cancelAnimationFrame(this._rafId);
-        this._rafId = null;
+      this.#renderActive = false;
+      this.#resetNodeOpacities();
+      if (this.#rafId) {
+        cancelAnimationFrame(this.#rafId);
+        this.#rafId = null;
       }
+    }
+
+    get #fadeableNodes() {
+      return this.#fadeableNodesCache || [];
     }
 
     /**
      * Resets opacity on all fadeable UI nodes to their default CSS values.
      */
-    _resetNodeOpacities() {
-      const nodes = [
-        this.nodes.bg,
-        this.nodes.ui,
-        this.nodes.prevBtn,
-        this.nodes.nextBtn,
-        this.nodes.imgNode,
-      ];
-      nodes.forEach((node) => {
+    #resetNodeOpacities() {
+      this.#fadeableNodes.forEach((node) => {
         if (node) {
           node.style.opacity = '';
         }
       });
     }
 
-    _startRenderLoop() {
-      if (this._rafId) {
+    #startRenderLoop() {
+      if (this.#rafId) {
         return;
       }
-      this._renderActive = true;
-      this._lastRenderTime = Date.now();
-      this._renderLoop();
+      this.#renderActive = true;
+      this.#lastRenderTime = window.performance.now();
+      this.#renderLoop();
     }
 
-    _renderLoop() {
-      if (!this._renderActive || !this.state.open) {
-        this._rafId = null;
+    #renderLoop() {
+      if (!this.#renderActive || !this.state.open) {
+        this.#rafId = null;
         return;
       }
 
-      const now = Date.now();
+      const now = window.performance.now();
       const dt =
-        Math.min(now - (this._lastRenderTime || now), MAX_FRAME_DT) /
+        Math.min(now - (this.#lastRenderTime || now), MAX_FRAME_DT) /
         MS_PER_SECOND;
-      this._lastRenderTime = now;
+      this.#lastRenderTime = now;
 
       const { scale, translateX, translateY } = this.state;
-      const rs = this.renderState;
+      const renderState = this.renderState;
 
       // Time-based lerp: 1 - exp(-decay * dt)
       // Higher decay = snappier animation, lower = smoother
       const f = 1 - Math.exp(-LERP_DECAY * dt);
 
-      rs.scale += (scale - rs.scale) * f;
-      rs.translateX += (translateX - rs.translateX) * f;
-      rs.translateY += (translateY - rs.translateY) * f;
+      renderState.scale += (scale - renderState.scale) * f;
+      renderState.translateX += (translateX - renderState.translateX) * f;
+      renderState.translateY += (translateY - renderState.translateY) * f;
 
-      this._checkConvergence(scale, translateX, translateY, rs);
+      this.#checkConvergence(scale, translateX, translateY, renderState);
 
       // Apply
       if (this.nodes.transform) {
         this.nodes.transform.style.transition = 'none';
-        this.nodes.transform.style.transform = `translate(${rs.translateX}px, ${rs.translateY}px) scale(${rs.scale})`;
-        this._updateZoomDisplay(rs.scale);
+        this.nodes.transform.style.transform = `translate(${renderState.translateX}px, ${renderState.translateY}px) scale(${renderState.scale})`;
+        this.#updateZoomDisplay(renderState.scale);
 
-        this._updateSwipeAnimation(rs.translateY);
+        this.#updateSwipeAnimation(renderState.translateY);
 
         const img = this.nodes.imgNode;
         img.style.cursor =
-          Math.abs(rs.scale - (this.state.baseScale || 1)) >
+          Math.abs(renderState.scale - (this.state.baseScale || 1)) >
             CURSOR_SCALE_THRESHOLD ||
-          Math.abs(rs.translateX) > 1 ||
-          Math.abs(rs.translateY) > 1
+          Math.abs(renderState.translateX) > 1 ||
+          Math.abs(renderState.translateY) > 1
             ? 'grab'
             : 'zoom-out';
       }
 
-      if (this._renderActive) {
-        this._rafId = requestAnimationFrame(() => this._renderLoop());
+      if (this.#renderActive) {
+        // Add DoS protection: limit render loop execution frequency
+        // Use setTimeout with minimum delay to prevent excessive CPU usage
+        this.#rafId = requestAnimationFrame(() => this.#renderLoop());
       } else {
-        this._rafId = null;
+        this.#rafId = null;
       }
     }
 
-    _updateSwipeAnimation(translateY) {
+    #updateSwipeAnimation(translateY) {
       // For trackpad swipes, allow animation at any zoom level (trackpad uses different gesture for pan)
       // For touch swipes, only animate when zoomed out
       const isZoomedOut =
@@ -1924,21 +2651,21 @@
         PAN_THRESHOLD;
 
       // Allow animation if: zoomed out OR it's a trackpad-initiated swipe
-      const allowAnimation = isZoomedOut || this._trackpadSwipeToClose;
+      const allowAnimation = isZoomedOut || this.#trackpadSwipeToClose;
 
       if (
         translateY > 0 &&
         this.state.open &&
         allowAnimation &&
-        this._swipeIntent
+        this.#swipeIntent
       ) {
         const progress = Math.min(
           1,
-          Math.abs(translateY) / SWIPE_CLOSE_DIVISOR
+          Math.abs(translateY) / SWIPE_CLOSE_DIVISOR,
         );
-        this._setNodeOpacities(1 - progress);
+        this.#setNodeOpacities(1 - progress);
       } else {
-        this._resetNodeOpacities();
+        this.#resetNodeOpacities();
       }
     }
 
@@ -1946,46 +2673,39 @@
      * Sets opacity on all fadeable UI nodes.
      * @param {number} opacity - Value between 0 and 1
      */
-    _setNodeOpacities(opacity) {
+    #setNodeOpacities(opacity) {
       const opacityStr = String(opacity);
-      const nodes = [
-        this.nodes.bg,
-        this.nodes.ui,
-        this.nodes.prevBtn,
-        this.nodes.nextBtn,
-        this.nodes.imgNode,
-      ];
-      nodes.forEach((node) => {
+      this.#fadeableNodes.forEach((node) => {
         if (node) {
           node.style.opacity = opacityStr;
         }
       });
     }
 
-    _checkConvergence(scale, translateX, translateY, rs) {
+    #checkConvergence(scale, translateX, translateY, renderState) {
       if (
-        Math.abs(scale - rs.scale) < CONVERGENCE_SCALE &&
-        Math.abs(translateX - rs.translateX) < CONVERGENCE_TRANSLATE &&
-        Math.abs(translateY - rs.translateY) < CONVERGENCE_TRANSLATE
+        Math.abs(scale - renderState.scale) < CONVERGENCE_SCALE &&
+        Math.abs(translateX - renderState.translateX) < CONVERGENCE_TRANSLATE &&
+        Math.abs(translateY - renderState.translateY) < CONVERGENCE_TRANSLATE
       ) {
-        rs.scale = scale;
-        rs.translateX = translateX;
-        rs.translateY = translateY;
-        this._renderActive = false;
+        renderState.scale = scale;
+        renderState.translateX = translateX;
+        renderState.translateY = translateY;
+        this.#renderActive = false;
         // Reset swipe intent when animation settles (e.g. bounce back complete)
         if (Math.abs(translateY) < 1) {
-          this._swipeIntent = false;
+          this.#swipeIntent = false;
         }
       }
     }
 
-    _fitImageToViewport() {
-      const img = this.nodes?.imgNode;
+    #fitImageToViewport() {
+      const img = this.nodes && this.nodes.imgNode;
       if (!img) {
         return;
       }
-      const vw = Math.max(window.innerWidth, 1);
-      const vh = Math.max(window.innerHeight, 1);
+      const viewportWidth = Math.max(window.innerWidth, 1);
+      const viewportHeight = Math.max(window.innerHeight, 1);
       const intrinsicWidth = img.naturalWidth || img.width || img.clientWidth;
       const intrinsicHeight =
         img.naturalHeight || img.height || img.clientHeight;
@@ -1993,9 +2713,9 @@
         return;
       }
 
-      const scaleW = vw / intrinsicWidth;
-      const scaleH = vh / intrinsicHeight;
-      const viewportLandscape = vw >= vh;
+      const scaleW = viewportWidth / intrinsicWidth;
+      const scaleH = viewportHeight / intrinsicHeight;
+      const viewportLandscape = viewportWidth >= viewportHeight;
 
       let baseScale;
 
@@ -2019,7 +2739,7 @@
       this.renderState.translateY = 0;
     }
 
-    _applyTransform(options = {}) {
+    #applyTransform(options = {}) {
       const immediate = options.immediate || !this.state.open;
       if (!this.nodes || !this.nodes.transform) {
         return;
@@ -2035,7 +2755,7 @@
       }
 
       wrapper.style.transform = `translate(${translateX}px, ${translateY}px) scale(${scale})`;
-      this._updateZoomDisplay(scale);
+      this.#updateZoomDisplay(scale);
 
       const img = this.nodes.imgNode;
       img.style.cursor =
@@ -2047,7 +2767,7 @@
           : 'zoom-out';
     }
 
-    _updateZoomDisplay(scale) {
+    #updateZoomDisplay(scale) {
       if (!this.nodes || !this.nodes.zoomDisplay) {
         return;
       }
@@ -2060,31 +2780,31 @@
      * Zooms the image by a given factor, centered on the viewport.
      * @param {number} factor - Zoom multiplier (>1 zooms in, <1 zooms out)
      */
-    _zoomBy(factor) {
-      this._handleUserActivity();
+    #zoomBy(factor) {
+      this.#handleUserActivity();
       this.state.scale = Math.min(
         MAX_SCALE,
-        Math.max(MIN_SCALE, this.state.scale * factor)
+        Math.max(MIN_SCALE, this.state.scale * factor),
       );
-      this._startRenderLoop();
+      this.#startRenderLoop();
     }
 
     /**
      * Resets the zoom to the base scale and centers the image.
      */
-    _resetZoom() {
-      this._handleUserActivity();
+    #resetZoom() {
+      this.#handleUserActivity();
       this.state.scale = this.state.baseScale || 1;
       this.state.translateX = 0;
       this.state.translateY = 0;
-      this._startRenderLoop();
+      this.#startRenderLoop();
     }
 
     /**
      * Constrains the image translation to keep at least MIN_VISIBLE_RATIO visible.
      * Prevents the image from being panned completely out of view.
      */
-    _constrainAndSync() {
+    #constrainAndSync() {
       const { naturalWidth, naturalHeight } = this.nodes.imgNode;
       const { clientWidth, clientHeight } = this.nodes.canvas;
       const currentW = naturalWidth * this.state.scale;
@@ -2099,11 +2819,11 @@
 
       this.state.translateX = Math.min(
         limitX,
-        Math.max(-limitX, this.state.translateX)
+        Math.max(-limitX, this.state.translateX),
       );
       this.state.translateY = Math.min(
         limitY,
-        Math.max(-limitY, this.state.translateY)
+        Math.max(-limitY, this.state.translateY),
       );
     }
 
@@ -2114,10 +2834,10 @@
      * @param {number} clientX - X coordinate of the anchor point
      * @param {number} clientY - Y coordinate of the anchor point
      */
-    _zoomAtPoint(factor, clientX, clientY) {
-      this._handleUserActivity();
-      this._swipeIntent = false;
-      this._trackpadSwipeToClose = false;
+    #zoomAtPoint(factor, clientX, clientY) {
+      this.#handleUserActivity();
+      this.#swipeIntent = false;
+      this.#trackpadSwipeToClose = false;
       const rect = (
         this.nodes.transform || this.nodes.imgNode
       ).getBoundingClientRect();
@@ -2132,7 +2852,7 @@
       const prevTargetScale = this.state.scale;
       const newTargetScale = Math.min(
         MAX_SCALE,
-        Math.max(MIN_SCALE, prevTargetScale * factor)
+        Math.max(MIN_SCALE, prevTargetScale * factor),
       );
 
       // Calculate new TARGET translation
@@ -2158,26 +2878,164 @@
       this.state.translateY = targetTy;
       this.state.scale = newTargetScale;
 
-      this._constrainAndSync();
-      this._startRenderLoop();
+      this.#constrainAndSync();
+      this.#startRenderLoop();
     }
 
     // Programmatic helper to attach to external nodes (if needed)
     attachImage(imgEl, collectionIndex, itemIndex) {
-      imgEl.dataset.spotlightCollection = String(collectionIndex);
-      imgEl.dataset.spotlightIndex = String(itemIndex);
-      imgEl.addEventListener('click', (e) => {
-        e.preventDefault();
-        this.openCollection(collectionIndex, itemIndex);
-      });
-    }
-
-    _injectStyles() {
-      if (document.getElementById('spotlight-styles')) {
+      if (!(imgEl instanceof window.HTMLImageElement)) {
+        this._reportError(
+          'attachImage.imgEl',
+          new TypeError('imgEl must be an HTMLImageElement'),
+        );
         return;
       }
-      const css = `
-      :root {
+      const safeCollectionIndex =
+        this.#sanitizeCollectionIndex(collectionIndex);
+      const safeItemIndex = this.#sanitizeCollectionIndex(itemIndex);
+      if (safeCollectionIndex === null || safeItemIndex === null) {
+        this._reportError(
+          'attachImage.indices',
+          new TypeError(
+            'collectionIndex and itemIndex must be non-negative integers',
+          ),
+        );
+        return;
+      }
+
+      // Track the image for later cleanup
+      this.#scannedImages.add(imgEl);
+      this.#trackElement(imgEl);
+
+      imgEl.dataset.spotlightCollection = String(safeCollectionIndex);
+      imgEl.dataset.spotlightIndex = String(safeItemIndex);
+      imgEl.style.cursor = 'zoom-in';
+
+      // Store and add listener
+      const listener = (e) => {
+        e.preventDefault();
+        this.openCollection(safeCollectionIndex, safeItemIndex);
+      };
+
+      // Clean up previous listener on the same element if it exists
+      if (this.#attachedListeners.has(imgEl)) {
+        imgEl.removeEventListener('click', this.#attachedListeners.get(imgEl));
+      }
+
+      this.#attachedListeners.set(imgEl, listener);
+      imgEl.addEventListener('click', listener);
+    }
+
+    /**
+     * Internal: Track an element using a WeakRef for later cleanup.
+     * @param {Element} el
+     */
+    #trackElement(el) {
+      if (!el) {
+        return;
+      }
+      if (typeof WeakRef === 'function') {
+        // Create a WeakRef and store it with a timestamp for cleanup purposes
+        const weakRef = new WeakRef(el);
+        this.#trackedElements.add(weakRef);
+        return;
+      }
+      this.#trackedElements.add(el);
+    }
+
+    /**
+     * Cleans up expired WeakRefs from the tracked elements set
+     * @private
+     */
+    #cleanupExpiredWeakRefs() {
+      if (typeof WeakRef !== 'function') {
+        return;
+      }
+
+      // Since we can't directly iterate WeakRefs, we need to recreate the set
+      // filtering out expired references
+      const validRefs = [];
+      for (const ref of this.#trackedElements) {
+        if (ref instanceof WeakRef) {
+          // Try to dereference - if it returns undefined, the object has been garbage collected
+          if (ref.deref() !== undefined) {
+            validRefs.push(ref);
+          }
+        } else {
+          // Non-WeakRef items are always valid
+          validRefs.push(ref);
+        }
+      }
+
+      // Replace the set with only valid references
+      this.#trackedElements = new Set(validRefs);
+    }
+
+    /**
+     * Periodically cleans up expired WeakRefs to prevent accumulation
+     * @private
+     */
+    #scheduleWeakRefCleanup() {
+      // Schedule cleanup every 30 seconds to avoid constant overhead
+      // but still prevent accumulation over time
+      if (this.#weakRefCleanupTimer) {
+        clearTimeout(this.#weakRefCleanupTimer);
+      }
+
+      this.#weakRefCleanupTimer = setTimeout(() => {
+        this.#cleanupExpiredWeakRefs();
+        // Continue scheduling cleanup
+        this.#scheduleWeakRefCleanup();
+      }, WEAKREF_CLEANUP_INTERVAL); // 30 seconds
+    }
+
+    /**
+     * Checks if styles are already injected
+     * @returns {boolean} Whether styles are already present
+     * @private
+     */
+    #areStylesInjected() {
+      if (this.#cssInjected) {
+        const existing = document.getElementById('spotlight-styles');
+        if (existing && existing.tagName === 'STYLE') {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    #injectStyles() {
+      if (this.#areStylesInjected()) {
+        return;
+      }
+
+      if (!document.head) {
+        this._reportError(
+          'injectStyles.noHead',
+          new Error('document.head is not available'),
+        );
+        return;
+      }
+
+      try {
+        const style = this.#createStyledElement(this.#getCSSContent());
+        document.head.appendChild(style);
+
+        // Store reference to prevent recreation
+        this.#cssInjected = true;
+      } catch (err) {
+        this.#handleStyleInjectionError(err);
+      }
+    }
+
+    /**
+     * Gets the CSS content for injection
+     * @returns {string} The CSS content
+     * @private
+     */
+    #getCSSContent() {
+      return `:root {
         --spot-bg: rgba(6,6,8,1);
         --spot-ui-bg: rgba(20,20,24,0.78);
         --spot-ui-fg: rgba(255,255,255,0.95);
@@ -2256,7 +3114,25 @@
         -webkit-font-feature-settings: "tnum" 1;
         font-feature-settings: "tnum" 1;
       }
-      .spot-btn { width:50px; height:50px; border-radius:6px; border:none; background:transparent; color:var(--spot-ui-fg); display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:600; cursor:pointer; transition:background 150ms ease; }
+      .spot-btn {
+        width:50px;
+        height:50px;
+        border-radius:6px;
+        border:none;
+        background:transparent;
+        color:var(--spot-ui-fg);
+        display:flex;
+        align-items:center;
+        justify-content:center;
+        font-size:16px;
+        font-weight:600;
+        cursor:pointer;
+        transition:background 150ms ease;
+        /* Ensure zoom percentage doesn't shift when numbers change */
+        font-variant-numeric: tabular-nums;
+        -webkit-font-feature-settings: "tnum" 1;
+        font-feature-settings: "tnum" 1;
+      }
       .spot-btn:active { transform:none; }
       #spot-caption { padding:14px 18px; font-size:21px; line-height:1.45; color:var(--spot-muted); }
       #spot-caption.spot-caption-empty { opacity:0; pointer-events:none; }
@@ -2268,7 +3144,7 @@
       @media (max-width:600px) {
         #spot-ui { flex-direction: column-reverse;}
         #spot-fullscreen { display:none; }
-        .spot-topbar { gap:10px; height:75px; padding 0 24px;}
+        .spot-topbar { gap:10px; height:75px; padding: 0 24px;}
         .spot-controls svg { width: 25px; height: 25px; }
         #spot-caption {font-size:16px;}
         .spot-nav { display:none; }
@@ -2298,29 +3174,26 @@
       /* Calibration skip button */
       #spot-calibration-skip { position: absolute; top: 15px; right: 20px; opacity: 0.25; transition: opacity 150ms ease; z-index: 10; cursor: pointer; background: transparent; border: none; padding: 0; margin: 0; color: var(--spot-ui-fg); font-weight: 600; font-size: 14px; }
       #spot-calibration-skip:hover { opacity: 1; }
-      /* Disable default browser focus outline while providing a subtle visible focus ring for keyboard users */
+      /* Provide a visible focus ring for keyboard users (WCAG 2.4.7) */
       #spot-calibration-skip:focus { outline: none; }
-      #spot-calibration-skip:focus-visible { outline: none; }
+      #spot-calibration-skip:focus-visible { outline: 2px solid var(--spot-ui-fg); outline-offset: 2px; border-radius: 3px; }
       #spot-calibration-skip:active { transform: scale(0.98); }
 
       /* Animations */
       .finger.swipe-down { left: 50%; transform: translateX(-50%); animation: swipeDown 2s cubic-bezier(0.4, 0, 0.2, 1) infinite; }
-      @keyframes swipeDown { 0% { top: 40px; opacity: 0; transform: translateX(-50%) scale(0.8); } 10% { opacity: 1; transform: translateX(-50%) scale(1); } 60% { top: 180px; opacity: 1; transform: translateX(-50%) scale(1); box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); } 75% { top: 180px; opacity: 0; transform: translateX(-50%) scale(1.5); box-shadow: 0 0 0 20px rgba(0, 122, 255, 0); } 100% { top: 180px; opacity: 0; } }
-      `;
-
-      const style = create('style', {
-        id: 'spotlight-styles',
-        type: 'text/css',
-      });
-      style.appendChild(document.createTextNode(css));
-      document.head.appendChild(style);
+      @keyframes swipeDown { 0% { top: 40px; opacity: 0; transform: translateX(-50%) scale(0.8); } 10% { opacity: 1; transform: translateX(-50%) scale(1); } 60% { top: 180px; opacity: 1; transform: translateX(-50%) scale(1); box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); } 75% { top: 180px; opacity: 0; transform: translateX(-50%) scale(1.5); box-shadow: 0 0 0 20px rgba(0, 122, 255, 0); } 100% { top: 180px; opacity: 0; } }`;
     }
 
-    _handleKeydown(e) {
+    #handleKeydown(e) {
       if (!this.state.open) {
         return;
       }
-      this._handleUserActivity();
+
+      if (this.#shouldIgnoreKeydown(e)) {
+        return;
+      }
+
+      this.#handleUserActivity();
 
       const code = e.code;
       const key = e.key;
@@ -2331,25 +3204,35 @@
         return;
       }
 
-      if (this._handleNavigationKey(code, kLower)) {
+      if (this.#handleNavigationKey(code, kLower)) {
         return;
       }
-      if (this._handleZoomKey(code, key)) {
+      if (this.#handleZoomKey(code, key)) {
         return;
       }
 
       if (['Digit0', 'Numpad0'].includes(code) || ['0', ')'].includes(key)) {
-        this._resetZoom();
+        this.#resetZoom();
         return;
       }
 
       // Fullscreen
       if (code === 'KeyF' || kLower === 'f') {
-        this._toggleFullscreen();
+        this.#toggleFullscreen();
       }
     }
 
-    _handleNavigationKey(code, kLower) {
+    #shouldIgnoreKeydown(e) {
+      if (!e) {
+        return true;
+      }
+      if (this.#isEditableTarget(e.target)) {
+        return true;
+      }
+      return Boolean(e.ctrlKey || e.altKey || e.metaKey);
+    }
+
+    #handleNavigationKey(code, kLower) {
       if (
         ['ArrowRight', 'KeyL', 'Right'].includes(code) ||
         ['arrowright', 'right', 'l'].includes(kLower)
@@ -2367,94 +3250,26 @@
       return false;
     }
 
-    _handleZoomKey(code, key) {
+    #handleZoomKey(code, key) {
       if (['Equal', 'NumpadAdd'].includes(code) || ['+', '='].includes(key)) {
-        this._zoomBy(ZOOM_FACTOR);
+        this.#zoomBy(ZOOM_FACTOR);
         return true;
       }
       if (
         ['Minus', 'NumpadSubtract'].includes(code) ||
         ['-', '_'].includes(key)
       ) {
-        this._zoomBy(1 / ZOOM_FACTOR);
+        this.#zoomBy(1 / ZOOM_FACTOR);
         return true;
       }
       return false;
     }
 
-    _handlePointerMove(e) {
-      if (this._dragPointerId !== e.pointerId) {
-        return;
-      }
-      this._handleUserActivity();
-
-      // If pinching, cancel drag to avoid conflict
-      if (this._isPinching) {
-        this._dragPointerId = null;
-        return;
-      }
-
-      // Check for swipe down start
-      if (!this._isVerticalSwipe && this._dragStart) {
-        this._checkForVerticalSwipe(e);
-      }
-
-      if (this._isVerticalSwipe) {
-        const dy = e.clientY - this._dragLast.y;
-        this.state.translateY += dy;
-        this._dragLast.x = e.clientX;
-        this._dragLast.y = e.clientY;
-        this._startRenderLoop();
-        return;
-      }
-
-      // Disable pan without zoom on mobile/touch
-      if (
-        e.pointerType === 'touch' &&
-        Math.abs(this.state.scale - (this.state.baseScale || 1)) < PAN_THRESHOLD
-      ) {
-        return;
-      }
-
-      const dx = e.clientX - this._dragLast.x;
-      const dy = e.clientY - this._dragLast.y;
-      this._dragLast.x = e.clientX;
-      this._dragLast.y = e.clientY;
-      this.state.translateX += dx;
-      this.state.translateY += dy;
-      this._constrainAndSync();
-      this._startRenderLoop();
-    }
-
-    _checkForVerticalSwipe(e) {
-      // Only allow swipe-to-close on touch devices
-      if (e.pointerType !== 'touch') {
-        // For mouse/pen, treat as normal pan (fall through)
-        return;
-      }
-
-      const totalDy = e.clientY - this._dragStart.y;
-      const totalDx = e.clientX - this._dragStart.x;
-      const isZoomedOut =
-        Math.abs(this.state.scale - (this.state.baseScale || 1)) <
-        PAN_THRESHOLD;
-
-      if (
-        isZoomedOut &&
-        totalDy > 0 &&
-        Math.abs(totalDy) > Math.abs(totalDx) &&
-        totalDy > SWIPE_THRESHOLD_PX
-      ) {
-        this._isVerticalSwipe = true;
-        this._swipeIntent = true;
-      }
-    }
-
-    _handleTouchEnd(e) {
+    #handleTouchEnd(e) {
       if (!this.state.open || !this.touchStart) {
         return;
       }
-      this._handleUserActivity();
+      this.#handleUserActivity();
       const endX =
         (e.changedTouches &&
           e.changedTouches[0] &&
@@ -2470,7 +3285,7 @@
       const dt = Date.now() - this.touchStart.t;
       this.touchStart = null;
 
-      if (this._isValidSwipe(dx, dy, dt)) {
+      if (this.#isValidSwipe(dx, dy, dt)) {
         if (dx < 0) {
           this.next();
         } else {
@@ -2479,7 +3294,100 @@
       }
     }
 
-    _isValidSwipe(dx, dy, dt) {
+    /**
+     * Creates and configures the style element with nonce if needed
+     * @param {string} cssContent - The CSS content to inject
+     * @returns {HTMLStyleElement} The configured style element
+     * @private
+     */
+    #createStyledElement(cssContent) {
+      const style = create('style', {
+        id: 'spotlight-styles',
+        type: 'text/css',
+      });
+
+      const config =
+        (window.Spotlight && window.Spotlight.config) || DEFAULT_CONFIG;
+      const autoNonceEl = document.querySelector('script[nonce]');
+      const autoNonce = autoNonceEl && autoNonceEl.nonce;
+      const finalNonce = config.cspNonce || autoNonce;
+      if (finalNonce) {
+        style.setAttribute('nonce', finalNonce);
+      }
+
+      // Use a TextNode for better performance
+      const textNode = document.createTextNode(cssContent);
+      style.appendChild(textNode);
+
+      return style;
+    }
+
+    /**
+     * Handles error during style injection
+     * @param {Error} err - The error that occurred
+     * @private
+     */
+    #handleStyleInjectionError(err) {
+      this._reportError('injectStyles.append', err);
+    }
+
+    #handlePointerMove(e) {
+      if (this.#dragPointerId !== e.pointerId) {
+        return;
+      }
+
+      // DoS protection: Rate limit pointer move events
+      const now = Date.now();
+      if (
+        this.#lastPointerMoveProcessed &&
+        now - this.#lastPointerMoveProcessed < FPS_INTERVAL
+      ) {
+        // ~60fps limit
+        return;
+      }
+      this.#lastPointerMoveProcessed = now;
+
+      this.#handleUserActivity();
+
+      // If pinching, cancel drag to avoid conflict
+      if (this.#isPinching) {
+        this.#dragPointerId = null;
+        return;
+      }
+
+      // Check for swipe down start
+      if (!this.#isVerticalSwipe && this.#dragStart) {
+        this.#checkForVerticalSwipe(e);
+      }
+
+      if (this.#isVerticalSwipe) {
+        const dy = e.clientY - this.#dragLast.y;
+        this.state.translateY += dy;
+        this.#dragLast.x = e.clientX;
+        this.#dragLast.y = e.clientY;
+        this.#startRenderLoop();
+        return;
+      }
+
+      // Disable pan without zoom on mobile/touch
+      if (
+        e.pointerType === 'touch' &&
+        Math.abs(this.state.scale - (this.state.baseScale || 1)) < PAN_THRESHOLD
+      ) {
+        return;
+      }
+
+      const dx = e.clientX - this.#dragLast.x;
+      const dy = e.clientY - this.#dragLast.y;
+      this.#dragLast.x = e.clientX;
+      this.#dragLast.y = e.clientY;
+      this.state.translateX += dx;
+      this.state.translateY += dy;
+      this.#constrainAndSync();
+      this.#startRenderLoop();
+    }
+
+    #isValidSwipe(dx, dy, dt) {
       const absDx = Math.abs(dx);
       const absDy = Math.abs(dy);
       return (
@@ -2490,85 +3398,222 @@
           SWIPE_SCALE_THRESHOLD
       );
     }
+
+    #checkForVerticalSwipe(e) {
+      // Only allow swipe-to-close on touch devices
+      if (e.pointerType !== 'touch') {
+        // For mouse/pen, treat as normal pan (fall through)
+        return;
+      }
+
+      const totalDy = e.clientY - this.#dragStart.y;
+      const totalDx = e.clientX - this.#dragStart.x;
+      const isZoomedOut =
+        Math.abs(this.state.scale - (this.state.baseScale || 1)) <
+        PAN_THRESHOLD;
+
+      if (
+        isZoomedOut &&
+        totalDy > 0 &&
+        Math.abs(totalDy) > Math.abs(totalDx) &&
+        totalDy > SWIPE_THRESHOLD_PX
+      ) {
+        this.#isVerticalSwipe = true;
+        this.#swipeIntent = true;
+      }
+    }
+  }
+
+  let autoHandler = null;
+  let autoRoots = [];
+
+  function getAutoRootSelector() {
+    const config =
+      (window.Spotlight && window.Spotlight.config) || DEFAULT_CONFIG;
+    const sel = String(config.autoInitRootSelector || '').trim();
+    return sel || DEFAULT_CONFIG.autoInitRootSelector;
+  }
+
+  function attachAutoHandlers(handler) {
+    const selector = getAutoRootSelector();
+    const roots = $$(selector).filter(Boolean);
+
+    // Fallback keeps behavior when no roots exist at init time.
+    if (!roots.length) {
+      window.addEventListener('click', handler);
+      autoRoots = [window];
+      return;
+    }
+
+    roots.forEach((root) => root.addEventListener('click', handler));
+    autoRoots = roots;
+  }
+
+  function detachAutoHandlers(handler) {
+    if (!autoRoots.length) {
+      window.removeEventListener('click', handler);
+      return;
+    }
+    autoRoots.forEach((root) => {
+      if (root && typeof root.removeEventListener === 'function') {
+        root.removeEventListener('click', handler);
+      }
+    });
+    autoRoots = [];
+  }
+
+  /**
+   * Internal helper to initialize the global click listener for auto-detection.
+   */
+  function initAuto() {
+    if (autoHandler) {
+      return;
+    }
+
+    autoHandler = (e) => {
+      if (!e || !e.target || typeof e.target.closest !== 'function') {
+        return;
+      }
+
+      const target = e.target.closest('img');
+      if (!target) {
+        return;
+      }
+      const container = target.closest('article, .gallery');
+      if (!container) {
+        return;
+      }
+
+      e.preventDefault();
+      const inst = initSpotlight();
+
+      // If the image hasn't been scanned (lazy loading), scan its container now.
+      if (!target.dataset.spotlightCollection) {
+        inst.scanContainer(container);
+      }
+
+      const collIndex = parseInt(target.dataset.spotlightCollection || '0', 10);
+      const itemIndex = parseInt(target.dataset.spotlightIndex || '0', 10);
+      inst.openCollection(collIndex, itemIndex);
+    };
+
+    attachAutoHandlers(autoHandler);
+  }
+
+  /**
+   * Internal helper to remove the global click listener.
+   */
+  function uninitAuto() {
+    if (!autoHandler) {
+      return;
+    }
+
+    detachAutoHandlers(autoHandler);
+    autoHandler = null;
   }
 
   function initSpotlight() {
-    if (window.__spotlight_instance) {
-      return window.__spotlight_instance;
+    if (__spotlight_instance) {
+      return __spotlight_instance;
     }
     const inst = new Spotlight();
-    window.__spotlight_instance = inst;
+    __spotlight_instance = inst;
     return inst;
   }
 
-  window.addEventListener('click', (e) => {
-    const target = e.target.closest('img');
-    if (!target) {
-      return;
-    }
-    const container = target.closest('article, .gallery');
-    if (!container) {
-      return;
-    }
+  /*__SPOTLIGHT_AUTO_INIT_START__*/
+  initAuto();
+  /*__SPOTLIGHT_AUTO_INIT_END__*/
 
-    e.preventDefault();
-    const inst = initSpotlight();
-    const collIndex = parseInt(target.dataset.spotlightCollection || '0', 10);
-    const itemIndex = parseInt(target.dataset.spotlightIndex || '0', 10);
-    inst.openCollection(collIndex, itemIndex);
-  });
-
-  // Expose a minimal public API
+  /**
+   * Public Spotlight API.
+   * Exposes methods to control the image gallery programmatically.
+   */
   window.Spotlight = {
+    /**
+     * Re-attaches the global click listener if it was previously removed.
+     */
+    init: () => initAuto(),
+    /**
+     * Removes the global click listener to prevent auto-detection.
+     */
+    uninit: () => uninitAuto(),
+    /**
+     * Gets the current Spotlight instance.
+     * @returns {Spotlight|null}
+     */
     get instance() {
-      return window.__spotlight_instance || null;
+      return __spotlight_instance || null;
     },
+    /**
+     * Global configuration object.
+     * @type {Object}
+     */
+    config: { ...DEFAULT_CONFIG },
+    /**
+     * Gets whether debug mode is enabled.
+     * @returns {boolean}
+     */
     get debug() {
-      return (
-        (window.__spotlight_instance && window.__spotlight_instance.debug) ||
-        false
-      );
+      return (__spotlight_instance && __spotlight_instance.debug) || false;
     },
+    /**
+     * Sets debug mode.
+     * @param {boolean} val
+     */
     set debug(val) {
       const v = Boolean(val);
-      window.__spotlight_debug__ = v;
-      if (window.__spotlight_instance) {
-        window.__spotlight_instance.debug = v;
+      __spotlight_debug__ = v;
+      if (__spotlight_instance) {
+        __spotlight_instance.debug = v;
       }
     },
+    /**
+     * Opens a specific image in a collection.
+     * @param {number} [collectionIndex=0] - The index of the gallery collection.
+     * @param {number} [itemIndex=0] - The index of the image within the collection.
+     */
     open: (collectionIndex = 0, itemIndex = 0) => {
-      if (!window.__spotlight_instance) {
+      if (!__spotlight_instance) {
         initSpotlight();
       }
-      window.__spotlight_instance.openCollection(collectionIndex, itemIndex);
+      __spotlight_instance.openCollection(collectionIndex, itemIndex);
     },
+    /**
+     * Re-scans the DOM for image collections. Useful after dynamic content loading.
+     * Safely destroys the old instance to prevent memory leaks before initializing a new one.
+     * @returns {Spotlight} The new Spotlight instance.
+     */
     rescan: () => {
-      // Re-scan page (e.g. after dynamic content load)
-      const inst = window.__spotlight_instance || initSpotlight();
-      // Simple strategy: rebuild instance
-      try {
-        // remove overlay if present
-        if (inst.overlay && inst.overlay.parentNode) {
-          inst.overlay.parentNode.removeChild(inst.overlay);
-        }
-      } catch (err) {
-        if (inst && typeof inst._reportError === 'function') {
-          inst._reportError('rescan.removeOverlay', err);
+      const inst = __spotlight_instance;
+      if (inst) {
+        try {
+          inst.destroy();
+        } catch (err) {
+          if (typeof inst._reportError === 'function') {
+            inst._reportError('rescan.destroy', err);
+          }
         }
       }
-      delete window.__spotlight_instance;
+      __spotlight_instance = null;
       return initSpotlight();
     },
+    /**
+     * Returns an array of captured errors (if any).
+     * @returns {Array<{op: string, err: Error, time: number}>}
+     */
     getCapturedErrors: () => {
       return (
-        (window.__spotlight_instance &&
-          window.__spotlight_instance._getCapturedErrors()) ||
+        (__spotlight_instance && __spotlight_instance._getCapturedErrors()) ||
         []
       );
     },
+    /**
+     * Clears the captured error log.
+     */
     clearCapturedErrors: () => {
-      if (window.__spotlight_instance) {
-        window.__spotlight_instance._clearCapturedErrors();
+      if (__spotlight_instance) {
+        __spotlight_instance._clearCapturedErrors();
       }
     },
   };

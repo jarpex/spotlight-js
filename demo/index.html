@@ -6,6 +6,7 @@
     <title>Spotlight JS – Demo</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌅</text></svg>">
 
+    <!-- Prefer using the built bundle when opening demo via file:// -->
     <script src="../dist/spotlight.min.js"></script>
     <script src="languages.js"></script>
     
@@ -881,7 +882,7 @@
     </dialog>
     <div class="container">
         <header>
-            <span class="badge">v1.0.3</span>
+            <span class="badge">v1.0.4</span>
             <br>
             <h1>🌅 <span>Spotlight JS</span></h1>
             <p data-i18n="subtitle" style="font-size: 1.25rem; max-width: 600px; margin: 0 auto 1.5rem auto;">The lightweight, dependency-free lightbox gallery built for the modern web.</p>
@@ -901,6 +902,7 @@
         </section>
 
         <section id="examples">
+            <p style="color:#6b7280; font-size:0.9rem; margin-top:.5rem">Note: the demo script auto-initializes Spotlight on image clicks. To build a non-auto-initializing bundle, run the build with <code>--no-auto-init</code>.</p>
             <h2 data-i18n="gallery_mode">Gallery Mode</h2>
             <p data-i18n="gallery_text">Effortless galleries. Just wrap your images in a container with the <code>.gallery</code> class, and Spotlight will automatically group them into a seamless collection.</p>
             
@@ -943,6 +945,36 @@
         &lt;figcaption&gt;Friendship of the Peoples Fountain.&lt;/figcaption&gt;
     &lt;/figure&gt;
 &lt;/article&gt;</code></pre>
+        </section>
+
+        <section id="programmatic">
+            <h2>Programmatic API</h2>
+            <p>Need more control? Use the Spotlight API to trigger the viewer manually or update configurations on the fly.</p>
+            
+            <div style="display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap;">
+                <button class="btn btn-primary" onclick="Spotlight.open(0, 0)">Open First Gallery</button>
+                <button class="btn btn-secondary" onclick="Spotlight.open(1, 0)">Open Article Mode</button>
+                <button class="btn btn-secondary" onclick="toggleDebug()">Toggle Debug Mode</button>
+            </div>
+
+            <pre><code class="language-js">// Open first image in first collection
+Spotlight.open(0, 0);
+
+// Enable verbose logging
+Spotlight.debug = true;
+
+// Custom configuration
+Spotlight.config.allowLocalFiles = true;
+Spotlight.rescan();</code></pre>
+
+            <script>
+                function toggleDebug() {
+                    if (!window.Spotlight) return;
+                    Spotlight.debug = !Spotlight.debug;
+                    console.log('Spotlight Debug Mode:', Spotlight.debug);
+                    alert('Debug mode ' + (Spotlight.debug ? 'enabled' : 'disabled') + '. Check console for logs.');
+                }
+            </script>
         </section>
 
         <section>
@@ -1091,7 +1123,7 @@
         </section>
         
         <footer style="text-align: center; margin-top: 4rem; color: #6b7280; font-size: 0.875rem;">
-            <p data-i18n="footer">&copy; 2025 Anastasia Shebalkina. Licensed under MIT.</p>
+            <p data-i18n="footer">&copy; 2026 Anastasia Shebalkina. Licensed under MIT.</p>
         </footer>
     </div>
 
