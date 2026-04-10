@@ -71,6 +71,10 @@
 
   // --- WheelEvent Constants ---
   const DOM_DELTA_PIXEL = 0; // WheelEvent.DOM_DELTA_PIXEL
+  // Standard fixed-step values used by some physical mouse wheels.
+  // `deltaY === 100` is a common fixed vertical step; `wheelDelta === 120` is legacy.
+  const MOUSE_WHEEL_DELTA_FIXED = 100;
+  const MOUSE_WHEEL_WHEELDELTA_FIXED = 120;
 
   // --- Input & Calibration ---
   const INPUT_DETECTION_DELAY = 400; // Delay for input detection (ms)
@@ -768,34 +772,40 @@
       if (!event) {
         return false;
       }
-      // Non-pixel wheel modes originate from mice/keyboard fallback.
-      // Compare to global DOM_DELTA_PIXEL constant
+
+      const { deltaY: eDeltaY, deltaMode: eDeltaMode, wheelDelta } = event;
+
+      // Quick exit: ignore events with no vertical movement
+      if (eDeltaY === 0) {
+        return false;
+      }
+
+      const absY = Math.abs(eDeltaY);
+
+      // 1. Line or Page modes are exclusive to physical mice (Windows/Linux fallbacks)
+      if (typeof eDeltaMode === 'number' && eDeltaMode !== DOM_DELTA_PIXEL) {
+        return false;
+      }
+
+      // 2. Filter out standard fixed-step mouse wheels (typically fixed-step deltas)
+      const absWheelDelta = Math.abs(wheelDelta || 0);
       if (
-        typeof event.deltaMode === 'number' &&
-        event.deltaMode !== DOM_DELTA_PIXEL
+        absY === MOUSE_WHEEL_DELTA_FIXED ||
+        absWheelDelta === MOUSE_WHEEL_WHEELDELTA_FIXED
       ) {
         return false;
       }
 
-      const absY = Math.abs(event.deltaY);
-
-      if (absY === 0) {
-        return false;
+      // 3. macOS Specific Logic:
+      // In our tests, Mac trackpads always produce clean integers (1, 2, 5...),
+      // while Apple/Magic mice produce noisy floats (4.0002..., 12.44...) due to acceleration.
+      if (/Mac/i.test(navigator.platform)) {
+        return Number.isInteger(eDeltaY);
       }
 
-      // Mouse wheels produce non-integer values like 4.000244140625
-      // Trackpads produce clean integers like 1, 2, 3, etc.
-      const isYInteger = Number.isInteger(event.deltaY);
-
-      // If deltaY has any fractional component, it's a mouse
-      if (!isYInteger) {
-        return false;
-      }
-
-      // Trackpad: clean integer values
-      // During fast swipes, trackpad can produce values up to ~10-15
-      // but they're always integers
-      return true;
+      // 4. Universal Fallback (Windows Precision Touchpads / Linux):
+      // Small or fractional steps (< fixed mouse wheel step) typically indicate trackpad gliding or inertia.
+      return absY < MOUSE_WHEEL_DELTA_FIXED;
     }
 
     #checkCalibration() {
