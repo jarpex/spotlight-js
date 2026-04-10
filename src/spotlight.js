@@ -865,14 +865,16 @@
       ]);
 
       const animContainer = create('div', { class: 'trackpad-container' }, [
-        create('div', {
-          class: 'finger swipe-down',
-          style: { marginLeft: '-22px' },
-        }),
-        create('div', {
-          class: 'finger swipe-down',
-          style: { marginLeft: '22px' },
-        }),
+        create('div', { class: 'trackpad' }, [
+          create('div', {
+            class: 'finger swipe-down',
+            style: { marginLeft: '-22px' },
+          }),
+          create('div', {
+            class: 'finger swipe-down',
+            style: { marginLeft: '22px' },
+          }),
+        ]),
       ]);
 
       const progressBar = create('div', { class: 'spot-progress-bar' });

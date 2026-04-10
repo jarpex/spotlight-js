@@ -92,6 +92,8 @@
             font-size: 0.95rem;
             transition: all 0.2s;
             text-decoration: none;
+            border: solid 1px var(--primary-color);
+            cursor: pointer;
         }
         .btn-primary {
             background: var(--primary-color);
@@ -858,6 +860,15 @@
                 background: rgba(0, 0, 0, 0.75);
                 backdrop-filter: blur(6px);
             }
+
+            /* Сброс браузерных стилей для кнопок с классом .btn */
+            button.btn {
+                appearance: none;
+                border: none;
+                margin: 0;
+                cursor: pointer;
+                outline: none;
+            }
         }
     </style>
 </head>
@@ -948,13 +959,13 @@
         </section>
 
         <section id="programmatic">
-            <h2>Programmatic API</h2>
-            <p>Need more control? Use the Spotlight API to trigger the viewer manually or update configurations on the fly.</p>
+            <h2 data-i18n="programmatic_api">Programmatic API</h2>
+            <p data-i18n="programmatic_text">Need more control? Use the Spotlight API to trigger the viewer manually or update configurations on the fly.</p>
             
-            <div style="display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap;">
-                <button class="btn btn-primary" onclick="Spotlight.open(0, 0)">Open First Gallery</button>
-                <button class="btn btn-secondary" onclick="Spotlight.open(1, 0)">Open Article Mode</button>
-                <button class="btn btn-secondary" onclick="toggleDebug()">Toggle Debug Mode</button>
+            <div class="hero-links">
+                <button class="btn btn-primary" onclick="Spotlight.open(0, 0)" data-i18n="open_first_gallery">Open First Gallery</button>
+                <button class="btn btn-secondary" onclick="Spotlight.open(1, 0)" data-i18n="open_article_mode">Open Article Mode</button>
+                <button class="btn btn-secondary" onclick="toggleDebug()" data-i18n="toggle_debug_mode">Toggle Debug Mode</button>
             </div>
 
             <pre><code class="language-js">// Open first image in first collection
@@ -1253,14 +1264,24 @@ Spotlight.rescan();</code></pre>
             const rtlLangs = ['ar', 'arz', 'he', 'fa', 'ur'];
             document.documentElement.dir = rtlLangs.includes(lang) ? 'rtl' : 'ltr';
 
+            const dict = TRANSLATIONS[lang] || TRANSLATIONS['en'];
+
             // Update text content
             document.querySelectorAll('[data-i18n]').forEach(el => {
                 const key = el.getAttribute('data-i18n');
-                if (TRANSLATIONS[lang] && TRANSLATIONS[lang][key]) {
-                    el.innerHTML = TRANSLATIONS[lang][key];
+                if (dict[key]) {
+                    el.innerHTML = dict[key];
                 } else if (TRANSLATIONS['en'][key]) {
                     el.innerHTML = TRANSLATIONS['en'][key]; // Fallback
                 }
+            });
+
+            // Ensure the Programmatic API block always reflects active language.
+            const forceKeys = ['programmatic_api', 'programmatic_text', 'open_first_gallery', 'open_article_mode', 'toggle_debug_mode'];
+            forceKeys.forEach((key) => {
+                const el = document.querySelector(`[data-i18n="${key}"]`);
+                if (!el) return;
+                el.innerHTML = dict[key] || TRANSLATIONS['en'][key] || el.innerHTML;
             });
 
             // Save preference
