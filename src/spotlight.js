@@ -44,7 +44,6 @@
 
   // --- Pinch Gesture ---
   const POINTERS_COUNT = 2; // Number of pointers for pinch gesture
-  const PINCH_MODERATION = 1; // Moderation factor for pinch zoom sensitivity
   const PINCH_SENSITIVITY_TOUCH = 1.1; // Sensitivity for touch devices
 
   // --- Pan & Swipe (Touch) ---
@@ -90,7 +89,6 @@
   const SLIDE_SCALE_INITIAL = 0.96; // Initial scale for slide-in animation
   const CLOSE_DELAY = 220; // Delay before removing overlay from DOM after close (ms)
   const UI_HIDE_DELAY = 1500; // Delay before hiding UI after inactivity (ms)
-  const FPS_INTERVAL = 16; // ~60fps interval in ms
   const WEAKREF_CLEANUP_INTERVAL = 30000; // 30 seconds in ms
 
   // --- Error Tracking ---
@@ -205,6 +203,8 @@
     return el;
   };
 
+  const _iconCache = {};
+
   /**
    * Helper to create an SVG icon element using createElementNS.
    * @param {string[]} paths - Array of path 'd' attributes
@@ -212,6 +212,11 @@
    * @returns {Element} SVG element
    */
   const createIcon = (paths, className = '') => {
+    const key = paths.join('') + className;
+    if (_iconCache[key]) {
+      return _iconCache[key].cloneNode(true);
+    }
+
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     const attrs = {
       width: '24',
@@ -250,7 +255,8 @@
       svg.appendChild(path);
     });
 
-    return svg;
+    _iconCache[key] = svg;
+    return svg.cloneNode(true);
   };
 
   // ============================================================================
@@ -343,19 +349,17 @@
     #swipeIntent = false;
     #lastRenderTime = 0;
     #resizeObserver = null;
+    #canvasRectCache = null;
     #lastFocused = null;
     #uiShowTimer = null;
-    #scannedImages = typeof WeakSet === 'function' ? new WeakSet() : new Set();
-    #attachedListeners =
-      typeof WeakMap === 'function' ? new WeakMap() : new Map();
+    #scannedImages = new WeakSet();
+    #attachedListeners = new WeakMap();
     #trackedElements = new Set(); // Store WeakRef<Element> or Element fallback for cleanup
     #managedListeners = [];
     #observer = null;
     #fadeableNodesCache = null;
     #pendingTimers = new Set();
     #weakRefCleanupTimer = null;
-    #lastWheelEventProcessed = 0;
-    #lastPointerMoveProcessed = 0;
     #cssInjected = false;
 
     #addTimer(callback, delay) {
@@ -730,12 +734,6 @@
         return this.#wheelSource || 'mouse';
       }
 
-      // If we already detected trackpad, keep using it (sticky)
-      // This prevents re-detection delays during gesture pauses
-      if (this.#wheelSource === 'trackpad') {
-        return 'trackpad';
-      }
-
       const isTrackpad = this.#isTrackpadWheel(event);
       const source = isTrackpad ? 'trackpad' : 'mouse';
 
@@ -743,8 +741,10 @@
         this.#hasTrackpad = true;
       }
 
+      // Only update mode if it actually changed, allowing seamless switching
+      // between mouse and trackpad on the fly for hybrid setups.
       if (source !== this.#wheelSource) {
-        this.#setInputMode(isTrackpad ? 'trackpad' : 'mouse');
+        this.#setInputMode(source);
       }
 
       this.#wheelSource = source;
@@ -766,6 +766,12 @@
       } else {
         body.classList.add('using-mouse');
       }
+    }
+
+    #isPlatformMac() {
+      const platform =
+        navigator.userAgentData?.platform || navigator.platform || '';
+      return /Mac|macOS/i.test(platform);
     }
 
     #isTrackpadWheel(event) {
@@ -799,8 +805,8 @@
       // 3. macOS Specific Logic:
       // In our tests, Mac trackpads always produce clean integers (1, 2, 5...),
       // while Apple/Magic mice produce noisy floats (4.0002..., 12.44...) due to acceleration.
-      if (/Mac/i.test(navigator.platform)) {
-        return Number.isInteger(eDeltaY);
+      if (this.#isPlatformMac()) {
+        return Number.isInteger(eDeltaY) && absY > 0;
       }
 
       // 4. Universal Fallback (Windows Precision Touchpads / Linux):
@@ -855,7 +861,7 @@
       this.calibrationActive = true;
       this.calibrationAccum = 0;
       this.calibrationStep = 0;
-      this.calibrationStartTime = Date.now();
+      this.calibrationStartTime = window.performance.now();
 
       const cal = create('div', {
         class: 'spot-calibration',
@@ -988,7 +994,8 @@
     #isCalibrationStartupDelayActive() {
       return (
         this.calibrationStartTime &&
-        Date.now() - this.calibrationStartTime < INPUT_DETECTION_DELAY
+        window.performance.now() - this.calibrationStartTime <
+          INPUT_DETECTION_DELAY
       );
     }
 
@@ -1003,7 +1010,7 @@
       if (this.calibrationStep === 0) {
         this.calibrationStep = 1;
         this.calibrationAccum = 0;
-        this.calibrationStartTime = Date.now();
+        this.calibrationStartTime = window.performance.now();
         // Reset delay for step 2
         if (this.nodes.calibrationProgress) {
           this.nodes.calibrationProgress.style.width = '0%';
@@ -1033,7 +1040,8 @@
       }
       this.needsCalibration = false;
       // Set cooldown to prevent immediate gesture triggering (e.g. swipe-to-close)
-      this.calibrationCooldown = Date.now() + CALIBRATION_COOLDOWN;
+      this.calibrationCooldown =
+        window.performance.now() + CALIBRATION_COOLDOWN;
       // Announce completion
       if (this.liveRegion) {
         this.liveRegion.textContent = 'Trackpad calibration complete.';
@@ -1133,7 +1141,7 @@
         window.removeEventListener('wheel', this.#pendingCalibrationListener);
         this.#pendingCalibrationListener = null;
       }
-      setTimeout(() => {
+      this.#addTimer(() => {
         this.#removeCalibrationNodes();
         if (
           this.#lastFocusedBeforeCalibration &&
@@ -1151,7 +1159,8 @@
       this.calibrationStep = 0;
       this.calibrationStartTime = 0;
       // Prevent immediate re-triggering
-      this.calibrationCooldown = Date.now() + CALIBRATION_COOLDOWN;
+      this.calibrationCooldown =
+        window.performance.now() + CALIBRATION_COOLDOWN;
       this.#closeCalibration();
     }
 
@@ -1183,8 +1192,7 @@
      */
     #scanCollections() {
       this.collections = [];
-      this.#scannedImages =
-        typeof WeakSet === 'function' ? new WeakSet() : new Set();
+      this.#scannedImages = new WeakSet();
       this.#trackedElements = new Set();
 
       const containers = $$('article, .gallery');
@@ -1506,7 +1514,13 @@
 
     // check if event target is inside stage so we can handle wheel pan vs page scroll
     #isPointerOverStage(e) {
-      const rect = this.nodes.canvas.getBoundingClientRect();
+      if (!this.#canvasRectCache && this.nodes && this.nodes.canvas) {
+        this.#canvasRectCache = this.nodes.canvas.getBoundingClientRect();
+      }
+      const rect = this.#canvasRectCache;
+      if (!rect) {
+        return false;
+      }
       return (
         e.clientX >= rect.left &&
         e.clientX <= rect.right &&
@@ -1609,7 +1623,7 @@
             this.touchStart = {
               x: e.touches[0].clientX,
               y: e.touches[0].clientY,
-              t: Date.now(),
+              t: window.performance.now(),
             };
           } else {
             this.touchStart = null;
@@ -1629,6 +1643,9 @@
 
       if (typeof ResizeObserver === 'function') {
         this.#resizeObserver = new ResizeObserver(() => {
+          if (this.nodes && this.nodes.canvas) {
+            this.#canvasRectCache = this.nodes.canvas.getBoundingClientRect();
+          }
           if (!this.state.open) {
             return;
           }
@@ -1678,7 +1695,7 @@
           gestureLastScale = e.scale;
           if (delta !== 1) {
             // Apply moderation to the delta
-            const moderatedDelta = 1 + (delta - 1) * PINCH_MODERATION;
+            const moderatedDelta = 1 + (delta - 1);
             this.#zoomAtPoint(moderatedDelta, e.clientX, e.clientY);
           }
         },
@@ -1702,30 +1719,19 @@
         return;
       }
 
-      // DoS protection: Rate limit wheel events to prevent excessive CPU usage
-      const now = Date.now();
-      if (
-        this.#lastWheelEventProcessed &&
-        now - this.#lastWheelEventProcessed < FPS_INTERVAL
-      ) {
-        // ~60fps limit
-        // Too frequent events, ignore to prevent DoS
-        return;
-      }
-      if (!this.#shouldProcessEvent(e)) {
-        return;
-      }
-
       const source = this.#determineWheelSource(e);
       const isTrackpad = source === 'trackpad';
 
       if (this.calibrationActive) {
-        this.#processCalibrationWheel(e);
+        this.#processCalibrationWheel(e, isTrackpad);
         return;
       }
 
       // Ignore events during cooldown (e.g. inertia after calibration)
-      if (this.calibrationCooldown && Date.now() < this.calibrationCooldown) {
+      if (
+        this.calibrationCooldown &&
+        window.performance.now() < this.calibrationCooldown
+      ) {
         return;
       }
 
@@ -1738,34 +1744,7 @@
       this.#processTrackpadWheel(e, isTrackpad);
     }
 
-    /**
-     * Determines if the wheel event should be processed based on DoS protection
-     * @param {WheelEvent} e - The wheel event
-     * @returns {boolean} Whether the event should be processed
-     * @private
-     */
-    #shouldProcessEvent(e) {
-      const now = Date.now();
-      if (
-        this.#lastWheelEventProcessed &&
-        now - this.#lastWheelEventProcessed < FPS_INTERVAL
-      ) {
-        // ~60fps limit
-        return false; // Too frequent events, ignore to prevent DoS
-      }
-      this.#lastWheelEventProcessed = now;
-      return true;
-    }
-
-    /**
-     * Handles the calibration wheel event specifically
-     * @param {WheelEvent} e - The wheel event
-     * @private
-     */
-    #processCalibrationWheel(e) {
-      const source = this.#determineWheelSource(e);
-      const isTrackpad = source === 'trackpad';
-
+    #processCalibrationWheel(e, isTrackpad) {
       if (isTrackpad) {
         this.#handleCalibrationWheel(e);
       }
@@ -1805,7 +1784,7 @@
     }
 
     #handleTrackpadWheel(e) {
-      const now = Date.now();
+      const now = window.performance.now();
       const timeSinceLastNav = now - (this.#lastSwipeNavTime || 0);
       const timeSinceLastWheel = now - (this.#lastWheelEventTime || 0);
 
@@ -1847,7 +1826,7 @@
     }
 
     #commitSwipeNavigation() {
-      this.#lastSwipeNavTime = Date.now();
+      this.#lastSwipeNavTime = window.performance.now();
       this.#wheelSwipeAccum = 0;
       // Lock mode to 'zoom' to prevent inertia from re-triggering
       this.#wheelMode = 'zoom';
@@ -1855,7 +1834,7 @@
     }
 
     #handleSwipeWheel(deltaX) {
-      const now = Date.now();
+      const now = window.performance.now();
       const timeSinceLastNav = now - (this.#lastSwipeNavTime || 0);
 
       // During debounce period, don't accumulate
@@ -1885,7 +1864,7 @@
      */
     #handleMouseWheelNavigation(deltaY) {
       // Debounce rapid scrolls
-      const now = Date.now();
+      const now = window.performance.now();
       if (now - (this.#lastMouseWheelNav || 0) < MOUSE_WHEEL_NAV_DEBOUNCE) {
         return;
       }
@@ -1947,8 +1926,7 @@
       // Trackpad pinch (ctrlKey)
       if (event.ctrlKey) {
         const delta = -event.deltaY;
-        const effectiveSensitivity =
-          TRACKPAD_PINCH_SENSITIVITY * PINCH_MODERATION;
+        const effectiveSensitivity = TRACKPAD_PINCH_SENSITIVITY;
         const factor = 1 + delta * effectiveSensitivity;
         this.#zoomAtPoint(factor, event.clientX, event.clientY);
         return;
@@ -1981,8 +1959,11 @@
     }
 
     #scheduleWheelGestureReset() {
-      clearTimeout(this.#wheelSwipeTimer);
-      this.#wheelSwipeTimer = setTimeout(
+      if (this.#wheelSwipeTimer) {
+        clearTimeout(this.#wheelSwipeTimer);
+        this.#pendingTimers.delete(this.#wheelSwipeTimer);
+      }
+      this.#wheelSwipeTimer = this.#addTimer(
         () => this.#endWheelGesture(),
         WHEEL_RESET_DELAY,
       );
@@ -1991,6 +1972,7 @@
     #endWheelGesture() {
       if (this.#wheelSwipeTimer) {
         clearTimeout(this.#wheelSwipeTimer);
+        this.#pendingTimers.delete(this.#wheelSwipeTimer);
         this.#wheelSwipeTimer = null;
       }
       if (this.#isVerticalSwipe) {
@@ -2021,8 +2003,11 @@
     }
 
     #scheduleUiHide() {
-      clearTimeout(this.#uiHideTimer);
-      this.#uiHideTimer = setTimeout(() => {
+      if (this.#uiHideTimer) {
+        clearTimeout(this.#uiHideTimer);
+        this.#pendingTimers.delete(this.#uiHideTimer);
+      }
+      this.#uiHideTimer = this.#addTimer(() => {
         if (this.#pointerOverUi) {
           // still over UI — reschedule hide
           this.#scheduleUiHide();
@@ -2199,9 +2184,7 @@
             initialDistance = currentDistance; // Update for next frame
             if (delta !== 1) {
               const sensitivity =
-                e.pointerType === 'touch'
-                  ? PINCH_SENSITIVITY_TOUCH
-                  : PINCH_MODERATION;
+                e.pointerType === 'touch' ? PINCH_SENSITIVITY_TOUCH : 1;
               const moderatedDelta = 1 + (delta - 1) * sensitivity;
               const cx = (p1.clientX + p2.clientX) * CENTER_OFFSET;
               const cy = (p1.clientY + p2.clientY) * CENTER_OFFSET;
@@ -2277,20 +2260,19 @@
       this.#lastFocused = document.activeElement;
 
       requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          this.overlay.classList.add(CLASS_OPEN);
-          this.overlay.setAttribute('aria-hidden', 'false');
-          document.documentElement.style.overflow = 'hidden';
-          this.nodes.shell.focus();
+        this.overlay.classList.add(CLASS_OPEN);
+        this.overlay.setAttribute('aria-hidden', 'false');
+        document.documentElement.style.overflow = 'hidden';
+        this.nodes.shell.focus();
 
-          if (this.#uiShowTimer) {
-            clearTimeout(this.#uiShowTimer);
-          }
-          this.#uiShowTimer = setTimeout(() => {
-            this.#showUiImmediate();
-            this.#scheduleUiHide();
-          }, ANIMATION_DURATION);
-        });
+        if (this.#uiShowTimer) {
+          clearTimeout(this.#uiShowTimer);
+          this.#pendingTimers.delete(this.#uiShowTimer);
+        }
+        this.#uiShowTimer = this.#addTimer(() => {
+          this.#showUiImmediate();
+          this.#scheduleUiHide();
+        }, ANIMATION_DURATION);
       });
     }
 
@@ -2326,10 +2308,8 @@
       });
 
       this.#trackedElements.clear();
-      this.#scannedImages =
-        typeof WeakSet === 'function' ? new WeakSet() : new Set();
-      this.#attachedListeners =
-        typeof WeakMap === 'function' ? new WeakMap() : new Map();
+      this.#scannedImages = new WeakSet();
+      this.#attachedListeners = new WeakMap();
       if (this.#observer) {
         this.#observer.disconnect();
         this.#observer = null;
@@ -2338,6 +2318,7 @@
         this.#resizeObserver.disconnect();
         this.#resizeObserver = null;
       }
+      this.#canvasRectCache = null;
       // Clear all pending timers
       this.#pendingTimers.forEach((id) => clearTimeout(id));
       this.#pendingTimers.clear();
@@ -2384,10 +2365,17 @@
       this.state.fullscreen = false;
       this.#exitFullscreen();
       this.#updateFullscreenButton();
-      clearTimeout(this.#uiHideTimer);
-      clearTimeout(this.#wheelSwipeTimer);
+      if (this.#uiHideTimer) {
+        clearTimeout(this.#uiHideTimer);
+        this.#pendingTimers.delete(this.#uiHideTimer);
+      }
+      if (this.#wheelSwipeTimer) {
+        clearTimeout(this.#wheelSwipeTimer);
+        this.#pendingTimers.delete(this.#wheelSwipeTimer);
+      }
       if (this.#uiShowTimer) {
         clearTimeout(this.#uiShowTimer);
+        this.#pendingTimers.delete(this.#uiShowTimer);
       }
       this.#wheelSwipeAccum = 0;
       this.#wheelMode = null;
@@ -2993,9 +2981,10 @@
       // but still prevent accumulation over time
       if (this.#weakRefCleanupTimer) {
         clearTimeout(this.#weakRefCleanupTimer);
+        this.#pendingTimers.delete(this.#weakRefCleanupTimer);
       }
 
-      this.#weakRefCleanupTimer = setTimeout(() => {
+      this.#weakRefCleanupTimer = this.#addTimer(() => {
         this.#cleanupExpiredWeakRefs();
         // Continue scheduling cleanup
         this.#scheduleWeakRefCleanup();
@@ -3077,7 +3066,7 @@
           background: rgba(245,245,245,0.98);
         }
       }
-      #spot-overlay { display:none; position:fixed; inset:0; z-index:2147483646; font-family:var(--spot-font); -webkit-font-smoothing:antialiased; opacity:0; transition:opacity var(--spot-anim); touch-action:none; direction: ltr; }
+      #spot-overlay { all: initial; display:none; position:fixed; inset:0; z-index:2147483646; font-family:var(--spot-font); -webkit-font-smoothing:antialiased; opacity:0; transition:opacity var(--spot-anim); touch-action:none; direction: ltr; }
       #spot-overlay, #spot-overlay * { -webkit-user-select:none; user-select:none; }
       #spot-overlay.spot-open { pointer-events:auto; opacity:1; }
       #spot-bg { position:fixed; inset:0; background:var(--spot-bg); transition:opacity var(--spot-anim); opacity:0; }
@@ -3294,7 +3283,7 @@
         0;
       const dx = endX - this.touchStart.x;
       const dy = endY - this.touchStart.y;
-      const dt = Date.now() - this.touchStart.t;
+      const dt = window.performance.now() - this.touchStart.t;
       this.touchStart = null;
 
       if (this.#isValidSwipe(dx, dy, dt)) {
@@ -3347,17 +3336,6 @@
       if (this.#dragPointerId !== e.pointerId) {
         return;
       }
-
-      // DoS protection: Rate limit pointer move events
-      const now = Date.now();
-      if (
-        this.#lastPointerMoveProcessed &&
-        now - this.#lastPointerMoveProcessed < FPS_INTERVAL
-      ) {
-        // ~60fps limit
-        return;
-      }
-      this.#lastPointerMoveProcessed = now;
 
       this.#handleUserActivity();
 
@@ -3439,16 +3417,45 @@
   let autoHandler = null;
   let autoRoots = [];
 
+  const MAX_AUTO_SELECTOR_LENGTH = 200;
+
   function getAutoRootSelector() {
     const config =
       (window.Spotlight && window.Spotlight.config) || DEFAULT_CONFIG;
-    const sel = String(config.autoInitRootSelector || '').trim();
-    return sel || DEFAULT_CONFIG.autoInitRootSelector;
+    let sel = String(config.autoInitRootSelector || '').trim();
+
+    // Validation: prevent dangerous or overly broad selectors
+    if (!sel || sel.length > MAX_AUTO_SELECTOR_LENGTH || sel === '*') {
+      sel = DEFAULT_CONFIG.autoInitRootSelector;
+    }
+    return sel;
   }
 
   function attachAutoHandlers(handler) {
     const selector = getAutoRootSelector();
-    const roots = $$(selector).filter(Boolean);
+    let roots = [];
+
+    try {
+      roots = $$(selector).filter(Boolean);
+    } catch (err) {
+      if (__spotlight_instance) {
+        __spotlight_instance._reportError('attachAutoHandlers', err);
+      }
+      // Fallback on error
+      try {
+        roots = $$(DEFAULT_CONFIG.autoInitRootSelector).filter(Boolean);
+      } catch (fallbackErr) {
+        if (
+          __spotlight_instance &&
+          typeof __spotlight_instance._reportError === 'function'
+        ) {
+          __spotlight_instance._reportError(
+            'attachAutoHandlers.fallback',
+            fallbackErr,
+          );
+        }
+      }
+    }
 
     // Fallback keeps behavior when no roots exist at init time.
     if (!roots.length) {
