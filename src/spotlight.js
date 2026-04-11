@@ -741,6 +741,13 @@
         return this.#wheelSource || 'mouse';
       }
 
+      // If we are currently processing a vertical trackpad swipe-to-close,
+      // lock the input source to trackpad so trailing fractional inertia
+      // doesn't mistakenly switch to mouse mode and trigger navigation.
+      if (this.#trackpadSwipeToClose || this.#isVerticalSwipe) {
+        return 'trackpad';
+      }
+
       const isTrackpad = this.#isTrackpadWheel(event);
       const source = isTrackpad ? 'trackpad' : 'mouse';
 
@@ -1892,6 +1899,10 @@
      * Uses debouncing to prevent rapid navigation.
      */
     #handleMouseWheelNavigation(deltaY) {
+      if (this.#trackpadSwipeToClose || this.#isVerticalSwipe) {
+        return;
+      }
+
       // Debounce rapid scrolls
       const now = window.performance.now();
       if (now - (this.#lastMouseWheelNav || 0) < MOUSE_WHEEL_NAV_DEBOUNCE) {
