@@ -26,7 +26,6 @@
   const SAFE_IMAGE_PROTOCOLS = ['http:', 'https:', 'data:'];
 
   // --- Event Handling ---
-  const EVENT_PREFIX_LENGTH = 2; // Length of 'on' prefix for event handlers
 
   // --- ID Generation ---
   const ID_BASE = 36; // Base for random ID generation
@@ -43,7 +42,6 @@
   const TRACKPAD_PINCH_SENSITIVITY = 0.01; // Base sensitivity for trackpad pinch zoom
 
   // --- Pinch Gesture ---
-  const POINTERS_COUNT = 2; // Number of pointers for pinch gesture
   const PINCH_SENSITIVITY_TOUCH = 1.1; // Sensitivity for touch devices
 
   // --- Pan & Swipe (Touch) ---
@@ -82,7 +80,6 @@
   const CALIBRATION_TARGET = 80; // Target accumulator value for calibration step
 
   // --- Animation & UI ---
-  const ANIMATION_DURATION = 300; // Duration of open/close animations (ms)
   const SLIDE_OFFSET = 60; // Pixel offset for slide animation
   const SLIDE_IN_DURATION = 650; // Duration of slide-in animation (ms)
   const SLIDE_IN_OPACITY_DURATION = 400; // Duration of slide-in opacity transition (ms)
@@ -148,7 +145,13 @@
    * @param {Element|Document} root - Root element to search from
    * @returns {Element[]} Array of matching elements
    */
-  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+  const $$ = (sel, root = document) => {
+    try {
+      return Array.from(root.querySelectorAll(sel));
+    } catch {
+      return [];
+    }
+  };
 
   /**
    * Creates a DOM element with the specified attributes and children.
@@ -179,7 +182,8 @@
       } else if (k.startsWith('on')) {
         // Only allow function handlers. String handlers (onclick="...") are blocked.
         if (typeof v === 'function') {
-          el.addEventListener(k.slice(EVENT_PREFIX_LENGTH), v);
+          // eslint-disable-next-line no-magic-numbers
+          el.addEventListener(k.slice(2), v);
         }
       } else if (k === 'dataset' && v && typeof v === 'object') {
         Object.entries(v).forEach(([dk, dv]) => {
@@ -354,7 +358,7 @@
     #uiShowTimer = null;
     #scannedImages = new WeakSet();
     #attachedListeners = new WeakMap();
-    #trackedElements = new Set(); // Store WeakRef<Element> or Element fallback for cleanup
+    #trackedElements = new Set(); // Store WeakRef<Element> for cleanup
     #managedListeners = [];
     #observer = null;
     #fadeableNodesCache = null;
@@ -723,6 +727,8 @@
       );
     }
 
+    #trackpadResetTimer = null;
+
     #determineWheelSource(event) {
       if (!event) {
         return this.#wheelSource || 'mouse';
@@ -739,6 +745,15 @@
 
       if (isTrackpad) {
         this.#hasTrackpad = true;
+        if (this.#trackpadResetTimer !== null) {
+          clearTimeout(this.#trackpadResetTimer);
+        }
+        this.#trackpadResetTimer = setTimeout(() => {
+          this.#hasTrackpad = false;
+          this.#wheelSource = 'mouse';
+          this.#setInputMode('mouse');
+          // eslint-disable-next-line no-magic-numbers
+        }, 2000);
       }
 
       // Only update mode if it actually changed, allowing seamless switching
@@ -1372,6 +1387,18 @@
         class: 'spot-btn',
         'aria-label': 'Toggle fullscreen',
       });
+      const maximizeIcon = createIcon(
+        PATHS_MAXIMIZE,
+        'icon-tabler-arrows-maximize',
+      );
+      const minimizeIcon = createIcon(
+        PATHS_MINIMIZE,
+        'icon-tabler-arrows-minimize',
+      );
+      maximizeIcon.style.display = 'block';
+      minimizeIcon.style.display = 'none';
+      fullscreen.appendChild(maximizeIcon);
+      fullscreen.appendChild(minimizeIcon);
 
       const close = create('button', {
         id: 'spot-close',
@@ -2085,16 +2112,13 @@
       if (!btn) {
         return;
       }
-      // Swap icon
-      btn.textContent = ''; // clear
-      btn.appendChild(
-        createIcon(
-          this.state.fullscreen ? PATHS_MINIMIZE : PATHS_MAXIMIZE,
-          this.state.fullscreen
-            ? 'icon-tabler-arrows-minimize'
-            : 'icon-tabler-arrows-maximize',
-        ),
-      );
+      // Swap icon visibility
+      const maximizeIcon = btn.querySelector('.icon-tabler-arrows-maximize');
+      const minimizeIcon = btn.querySelector('.icon-tabler-arrows-minimize');
+      if (maximizeIcon && minimizeIcon) {
+        maximizeIcon.style.display = this.state.fullscreen ? 'none' : 'block';
+        minimizeIcon.style.display = this.state.fullscreen ? 'block' : 'none';
+      }
       btn.setAttribute(
         'aria-label',
         this.state.fullscreen ? 'Exit fullscreen' : 'Enter fullscreen',
@@ -2147,7 +2171,8 @@
         this.#swipeIntent = false;
         this.#trackpadSwipeToClose = false;
         this.pointers.set(e.pointerId, e);
-        if (this.pointers.size === POINTERS_COUNT) {
+        // eslint-disable-next-line no-magic-numbers
+        if (this.pointers.size === 2) {
           this.#isPinching = true;
           // calculate distance - optimized: use iterator directly instead of Array.from()
           const values = this.pointers.values();
@@ -2170,7 +2195,8 @@
         }
         this.#handleUserActivity();
         this.pointers.set(e.pointerId, e);
-        if (this.pointers.size === POINTERS_COUNT) {
+        // eslint-disable-next-line no-magic-numbers
+        if (this.pointers.size === 2) {
           // Optimized: use iterator directly instead of Array.from()
           const values = this.pointers.values();
           const p1 = values.next().value;
@@ -2195,7 +2221,8 @@
       };
       const onPointerUp = (e) => {
         this.pointers.delete(e.pointerId);
-        if (this.pointers.size < POINTERS_COUNT) {
+        // eslint-disable-next-line no-magic-numbers
+        if (this.pointers.size < 2) {
           this.#isPinching = false;
           initialDistance = 0;
         }
@@ -2268,11 +2295,26 @@
         if (this.#uiShowTimer) {
           clearTimeout(this.#uiShowTimer);
           this.#pendingTimers.delete(this.#uiShowTimer);
+          this.#uiShowTimer = null;
         }
-        this.#uiShowTimer = this.#addTimer(() => {
+
+        const handleTransitionEnd = (e) => {
+          if (e.target !== this.overlay) {
+            return;
+          }
+          this.overlay.removeEventListener(
+            'transitionend',
+            handleTransitionEnd,
+          );
+          if (!this.state.open) {
+            return;
+          }
+
           this.#showUiImmediate();
           this.#scheduleUiHide();
-        }, ANIMATION_DURATION);
+        };
+
+        this.overlay.addEventListener('transitionend', handleTransitionEnd);
       });
     }
 
@@ -2281,6 +2323,10 @@
      */
     destroy() {
       this.close();
+      if (this.#trackpadResetTimer !== null) {
+        clearTimeout(this.#trackpadResetTimer);
+        this.#trackpadResetTimer = null;
+      }
       if (this.#abortController) {
         this.#abortController.abort();
       }
@@ -2289,7 +2335,7 @@
 
       // Clean up manually attached listeners and DOM pollution
       this.#trackedElements.forEach((ref) => {
-        const el = typeof ref.deref === 'function' ? ref.deref() : ref;
+        const el = ref.deref();
         if (!el) {
           return;
         }
@@ -2935,13 +2981,7 @@
       if (!el) {
         return;
       }
-      if (typeof WeakRef === 'function') {
-        // Create a WeakRef and store it with a timestamp for cleanup purposes
-        const weakRef = new WeakRef(el);
-        this.#trackedElements.add(weakRef);
-        return;
-      }
-      this.#trackedElements.add(el);
+      this.#trackedElements.add(new WeakRef(el));
     }
 
     /**
@@ -3568,7 +3608,7 @@
      * Global configuration object.
      * @type {Object}
      */
-    config: { ...DEFAULT_CONFIG },
+    config: Object.freeze({ ...DEFAULT_CONFIG }),
     /**
      * Gets whether debug mode is enabled.
      * @returns {boolean}
