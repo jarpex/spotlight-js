@@ -353,6 +353,7 @@
     #swipeIntent = false;
     #lastRenderTime = 0;
     #resizeObserver = null;
+    #baseRectCache = null;
     #canvasRectCache = null;
     #lastFocused = null;
     #uiShowTimer = null;
@@ -1671,6 +1672,7 @@
       if (typeof ResizeObserver === 'function') {
         this.#resizeObserver = new ResizeObserver(() => {
           if (this.nodes && this.nodes.canvas) {
+            this.#baseRectCache = null;
             this.#canvasRectCache = this.nodes.canvas.getBoundingClientRect();
           }
           if (!this.state.open) {
@@ -2364,6 +2366,7 @@
         this.#resizeObserver.disconnect();
         this.#resizeObserver = null;
       }
+      this.#baseRectCache = null;
       this.#canvasRectCache = null;
       // Clear all pending timers
       this.#pendingTimers.forEach((id) => clearTimeout(id));
@@ -2605,6 +2608,7 @@
       this.renderState.scale = 1;
       this.renderState.translateX = 0;
       this.renderState.translateY = 0;
+      this.#baseRectCache = null;
       this.#renderActive = false;
       this.#resetNodeOpacities();
       if (this.#rafId) {
@@ -2884,15 +2888,38 @@
       this.#handleUserActivity();
       this.#swipeIntent = false;
       this.#trackpadSwipeToClose = false;
-      const rect = (
-        this.nodes.transform || this.nodes.imgNode
-      ).getBoundingClientRect();
-      const imgCx = clientX - rect.left;
-      const imgCy = clientY - rect.top;
+
+      const rScale = this.renderState.scale || 1;
+      const rTx = this.renderState.translateX || 0;
+      const rTy = this.renderState.translateY || 0;
+
+      // To avoid layout thrashing, we cache the un-transformed base bounding Box
+      // of the node ONCE and then calculate its position via math for subsequent frames.
+      // This exactly mirrors getBoundingClientRect() but costs 0 layout cycles.
+      if (!this.#baseRectCache) {
+        const node = this.nodes.transform || this.nodes.imgNode;
+        const domRect = node.getBoundingClientRect();
+        this.#baseRectCache = {
+          width: domRect.width / rScale,
+          height: domRect.height / rScale,
+          cx: domRect.left + domRect.width * CENTER_OFFSET - rTx,
+          cy: domRect.top + domRect.height * CENTER_OFFSET - rTy,
+        };
+      }
+
+      const base = this.#baseRectCache;
+      const rectWidth = base.width * rScale;
+      const rectHeight = base.height * rScale;
+      // Reverse-engineer the left/top edges based on center and new dimensions
+      const rectLeft = base.cx + rTx - rectWidth * CENTER_OFFSET;
+      const rectTop = base.cy + rTy - rectHeight * CENTER_OFFSET;
+
+      const imgCx = clientX - rectLeft;
+      const imgCy = clientY - rectTop;
 
       // Calculate delta based on rendered state (what user sees)
-      const relX = imgCx / rect.width;
-      const relY = imgCy / rect.height;
+      const relX = imgCx / rectWidth;
+      const relY = imgCy / rectHeight;
 
       // Update TARGET scale
       const prevTargetScale = this.state.scale;
