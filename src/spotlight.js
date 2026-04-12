@@ -351,6 +351,7 @@
     #pointerOverUiCount = 0;
     #isVerticalSwipe = false;
     #swipeIntent = false;
+    #lastSwipeCloseTime = 0;
     #lastRenderTime = 0;
     #resizeObserver = null;
     #baseRectCache = null;
@@ -2253,6 +2254,13 @@
      * @param {number} [itemIndex=0] - Index of the item within the collection
      */
     openCollection(collectionIndex, itemIndex = 0) {
+      if (
+        this.#lastSwipeCloseTime &&
+        window.performance.now() - this.#lastSwipeCloseTime < CLOSE_DELAY
+      ) {
+        return; // Ignore open attempts immediately after a trackpad/touch swipe close
+      }
+
       const safeCollectionIndex =
         this.#sanitizeCollectionIndex(collectionIndex);
       const safeItemIndex = this.#sanitizeCollectionIndex(itemIndex);
@@ -2443,6 +2451,14 @@
       this.#swipeModeLocked = false;
       this.#lastWheelDeltaX = 0;
       this.#pendingSlideDir = 0;
+
+      if (this.#isVerticalSwipe || this.#trackpadSwipeToClose) {
+        this.#lastSwipeCloseTime = window.performance.now();
+      }
+      this.#isVerticalSwipe = false;
+      this.#trackpadSwipeToClose = false;
+      this.#swipeIntent = false;
+
       this.#hideUi();
       if (this.#pendingCalibrationListener) {
         window.removeEventListener('wheel', this.#pendingCalibrationListener);
