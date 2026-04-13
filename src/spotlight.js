@@ -44,12 +44,26 @@
   // --- Pinch Gesture ---
   const PINCH_SENSITIVITY_TOUCH = 1.1; // Sensitivity for touch devices
 
+  // --- Friction & Damping ---
+  const FRICTION_DAMPEN_MIN = 0.01; // Minimum dampen factor
+  const FRICTION_EXP_SCALE = 100; // Exponential decay scale for vertical friction
+  const FRICTION_MULTIPLIER = 0.4; // Dampening multiplier
+  const FRICTION_X_MIN = 0.05; // Minimum horizontal dampen factor
+  const FRICTION_X_MULTIPLIER = 0.6; // Horizontal dampen multiplier
+  const FRICTION_X_SCALE = 3; // Divisor for horizontal scale (innerWidth / 3)
+  const FRICTION_Y_MAX = 1.5; // Divisor for max Y threshold (innerHeight / 1.5)
+
   // --- Pan & Swipe (Touch) ---
   const PAN_THRESHOLD = 0.1; // Threshold for panning vs zooming on touch
   const SWIPE_TIMEOUT = 500; // Max time for a swipe gesture (ms)
   const SWIPE_SCALE_THRESHOLD = 0.25; // Max scale deviation to allow swipe navigation
   const SWIPE_THRESHOLD_PX = 20; // Minimum pixel distance for a swipe
   const SWIPE_DOWN_THRESHOLD = 100; // Pixels to drag down to close
+  const SWIPE_CLOSE_TRIGGER_MULTIPLIER = 1.5; // Multiplier for early swipe-close threshold
+  const SWIPE_CLOSE_MIN_DISTANCE = 20; // Minimum swipe distance before forcing close
+  const SWIPE_CLOSE_VELOCITY_THRESHOLD = 0.5; // Minimum swipe velocity before forcing close
+  const SWIPE_CLOSE_UI_PROGRESS_RATIO = 3; // Ratio for swipe-close UI fade timing
+  const SWIPE_THUMBNAIL_RADIUS_FALLBACK = 12; // Fallback radius for swipe-close thumbnail effect
   const SWIPE_CLOSE_DIVISOR = 150; // Divisor for swipe-to-close animation progress
   const MIN_VISIBLE_RATIO = 0.05; // Min visible fraction when panning image
 
@@ -84,6 +98,11 @@
   const SLIDE_IN_DURATION = 650; // Duration of slide-in animation (ms)
   const SLIDE_IN_OPACITY_DURATION = 400; // Duration of slide-in opacity transition (ms)
   const SLIDE_SCALE_INITIAL = 0.96; // Initial scale for slide-in animation
+  const SHARED_ELEMENT_TRANSITION_DURATION = 550; // Duration for shared element morphing (ms)
+  const SHARED_ELEMENT_TRANSITION_EASING = 'cubic-bezier(0.32, 0.72, 0, 1)';
+  const UI_TRANSITION_FALLBACK_DELAY = 600; // Fallback delay for UI transition completion (ms)
+  const CLOSE_SCROLL_LOCK_IDLE_DELAY = 100; // Idle delay before releasing post-close scroll lock (ms)
+  const CLOSE_SCROLL_LOCK_MAX_DURATION = 2000; // Maximum duration for post-close scroll lock (ms)
   const CLOSE_DELAY = 220; // Delay before removing overlay from DOM after close (ms)
   const UI_HIDE_DELAY = 1500; // Delay before hiding UI after inactivity (ms)
   const WEAKREF_CLEANUP_INTERVAL = 30000; // 30 seconds in ms
@@ -335,8 +354,9 @@
     #trackpadSwipeToClose = false; // Flag for trackpad swipe to close gesture
     #pendingSlideDir = 0;
     #dragPointerId = null;
-    #dragLast = { x: 0, y: 0 };
+    #dragLast = { x: 0, y: 0, time: 0 };
     #dragStart = null;
+    #dragVelocity = { y: 0 };
     #isPinching = false;
     #caughtErrors = [];
     #abortController = null;
@@ -352,11 +372,18 @@
     #isVerticalSwipe = false;
     #swipeIntent = false;
     #lastSwipeCloseTime = 0;
+    #transitionCleanupFn = null;
     #lastRenderTime = 0;
     #resizeObserver = null;
     #baseRectCache = null;
     #canvasRectCache = null;
     #lastFocused = null;
+    #activeThumbnail = null;
+    #openThumbnailSnapshot = null;
+    #openTransitionInProgress = false;
+    #closeFlybackState = null;
+    #closeFlybackSyncRaf = null;
+    #closeFlybackCompletionTimer = null;
     #uiShowTimer = null;
     #scannedImages = new WeakSet();
     #attachedListeners = new WeakMap();
@@ -1462,8 +1489,9 @@
         caption,
       };
 
-      // Cache fadeable nodes to avoid allocating a new array each render frame
-      this.#fadeableNodesCache = [bg, ui, prevBtn, nextBtn, img];
+      // Cache fadeable nodes to avoid allocating a new array each render frame.
+      // Notice we purposefully exclude 'img' so it NEVER fades out during swipe/transitions.
+      this.#fadeableNodesCache = [bg, ui, prevBtn, nextBtn];
 
       // track whether pointer is over UI (topbar / caption / buttons / navs)
       this.#pointerOverUi = false;
@@ -1604,7 +1632,13 @@
         this.#dragPointerId = e.pointerId;
         this.#dragLast.x = e.clientX;
         this.#dragLast.y = e.clientY;
-        this.#dragStart = { x: e.clientX, y: e.clientY };
+        this.#dragLast.time = window.performance.now();
+        this.#dragStart = {
+          x: e.clientX,
+          y: e.clientY,
+          time: window.performance.now(),
+        };
+        this.#dragVelocity = { y: 0 };
         this.#isVerticalSwipe = false;
         try {
           this.nodes.imgNode.setPointerCapture(e.pointerId);
@@ -1625,10 +1659,18 @@
           if (this.#dragPointerId === e.pointerId) {
             if (this.#isVerticalSwipe) {
               const totalDy = e.clientY - this.#dragStart.y;
-              if (totalDy > SWIPE_DOWN_THRESHOLD) {
+              const velocityY = this.#dragVelocity ? this.#dragVelocity.y : 0;
+
+              // iOS-like: close on fast flick or passing the threshold
+              if (
+                totalDy > SWIPE_DOWN_THRESHOLD ||
+                (totalDy > SWIPE_CLOSE_MIN_DISTANCE &&
+                  velocityY > SWIPE_CLOSE_VELOCITY_THRESHOLD)
+              ) {
                 this.close();
               } else {
                 this.state.translateY = 0;
+                this.state.translateX = 0; // reset friction X drift too
                 this.#constrainAndSync();
                 this.#startRenderLoop();
               }
@@ -1682,6 +1724,9 @@
           if (this.nodes && this.nodes.canvas) {
             this.#baseRectCache = null;
             this.#canvasRectCache = this.nodes.canvas.getBoundingClientRect();
+          }
+          if (this.#openTransitionInProgress) {
+            return;
           }
           if (!this.state.open) {
             return;
@@ -1982,20 +2027,50 @@
       // For trackpad, allow at any zoom level since pan is a different gesture (two-finger drag)
       // For touch screens, this is handled separately with zoom-level check
       if (isTrackpad) {
+        this.#handleTrackpadSwipeClose(event, deltaY);
+      }
+    }
+
+    #handleTrackpadSwipeClose(event, deltaY) {
+      if (!this.#isVerticalSwipe) {
         // Only trigger if vertical movement is dominant and significant
-        // This prevents accidental vertical swipes when trying to swipe horizontally
         if (Math.abs(deltaY) > Math.abs(event.deltaX) && Math.abs(deltaY) > 0) {
           this.#isVerticalSwipe = true;
           this.#swipeIntent = true;
           this.#trackpadSwipeToClose = true; // Track that this is a trackpad-initiated close gesture
-          // Use raw delta values - no multiplier for natural feel
-          this.state.translateY += deltaY;
-          // Prevent moving up (negative translateY) during swipe-to-close
-          if (this.state.translateY < 0) {
-            this.state.translateY = 0;
-          }
-          this.#startRenderLoop();
         }
+      }
+
+      if (!this.#isVerticalSwipe) {
+        return;
+      }
+
+      const dy = deltaY;
+      let dx = event.deltaX;
+      if (this.invertedScroll) {
+        dx = -dx;
+      }
+
+      const { dx: dDx, dy: dDy } = this.#applyFriction(dx, dy);
+
+      this.state.translateY += dDy;
+      this.state.translateX += dDx;
+
+      this.#startRenderLoop();
+
+      // Break out of the wheel bounce threshold tracking if swiped far enough fast enough
+      if (
+        this.state.translateY >
+        SWIPE_DOWN_THRESHOLD * SWIPE_CLOSE_TRIGGER_MULTIPLIER
+      ) {
+        this.#commitSwipeNavigation(); // Locks the inertia gesture to prevent multiple hits
+        this.close();
+      } else if (
+        this.state.translateY <
+        -SWIPE_DOWN_THRESHOLD * SWIPE_CLOSE_TRIGGER_MULTIPLIER
+      ) {
+        this.#commitSwipeNavigation();
+        this.close();
       }
     }
 
@@ -2148,31 +2223,529 @@
       }
     }
 
+    #captureThumbnailSnapshot(element) {
+      if (!element || typeof element.getBoundingClientRect !== 'function') {
+        return null;
+      }
+
+      const rect = element.getBoundingClientRect();
+      if (!rect || rect.width <= 0 || rect.height <= 0) {
+        return null;
+      }
+
+      const style = window.getComputedStyle(element);
+      return {
+        element,
+        rect: {
+          left: rect.left,
+          top: rect.top,
+          width: rect.width,
+          height: rect.height,
+        },
+        borderRadius: style.borderRadius,
+        objectFit: style.objectFit || 'cover',
+        objectPosition: style.objectPosition || 'center',
+        filter: style.filter !== 'none' ? style.filter : '',
+      };
+    }
+
+    #startSharedElementOpen(snapshot, img) {
+      if (
+        !snapshot ||
+        !img ||
+        !this.nodes ||
+        !this.nodes.transform ||
+        !this.nodes.canvas
+      ) {
+        return false;
+      }
+
+      const canvasRect = this.nodes.canvas.getBoundingClientRect();
+      const startX =
+        snapshot.rect.left +
+        snapshot.rect.width * CENTER_OFFSET -
+        canvasRect.left -
+        canvasRect.width * CENTER_OFFSET;
+      const startY =
+        snapshot.rect.top +
+        snapshot.rect.height * CENTER_OFFSET -
+        canvasRect.top -
+        canvasRect.height * CENTER_OFFSET;
+      const finalWidth = img.naturalWidth || img.clientWidth;
+      const finalHeight = img.naturalHeight || img.clientHeight;
+      const transCss = `${SHARED_ELEMENT_TRANSITION_DURATION}ms ${SHARED_ELEMENT_TRANSITION_EASING}`;
+
+      this.nodes.transform.style.transition = 'none';
+      this.nodes.transform.style.transform = `translate(${startX}px, ${startY}px) scale(1)`;
+
+      img.style.transition = 'none';
+      img.style.width = `${snapshot.rect.width}px`;
+      img.style.height = `${snapshot.rect.height}px`;
+      img.style.objectFit = snapshot.objectFit;
+      img.style.objectPosition = snapshot.objectPosition;
+      img.style.borderRadius = snapshot.borderRadius;
+      img.style.filter = snapshot.filter;
+      img.style.opacity = '1';
+
+      if (snapshot.element && snapshot.element.style) {
+        snapshot.element.style.visibility = 'hidden';
+      }
+
+      void this.nodes.transform.offsetWidth;
+      void this.nodes.canvas.offsetWidth;
+      void img.offsetWidth;
+
+      const cleanup = (event) => {
+        if (event && event.target !== this.nodes.transform) {
+          return;
+        }
+
+        if (this.nodes && this.nodes.transform) {
+          this.nodes.transform.removeEventListener('transitionend', cleanup);
+        }
+        this.#transitionCleanupFn = null;
+        this.#openTransitionInProgress = false;
+        this.#renderActive = true;
+        this.#startRenderLoop();
+
+        if (this.nodes.transform) {
+          this.nodes.transform.style.transition = '';
+          this.nodes.transform.style.transform = `translate(${this.renderState.translateX}px, ${this.renderState.translateY}px) scale(${this.state.baseScale})`;
+        }
+        if (img) {
+          img.style.transition = '';
+          img.style.width = '';
+          img.style.height = '';
+          img.style.objectFit = '';
+          img.style.objectPosition = '';
+          img.style.filter = '';
+          img.style.borderRadius = '';
+        }
+        if (this.nodes.bg) {
+          this.nodes.bg.style.transition = '';
+        }
+
+        this.#openThumbnailSnapshot = null;
+      };
+
+      if (this.#transitionCleanupFn && this.nodes.transform) {
+        this.nodes.transform.removeEventListener(
+          'transitionend',
+          this.#transitionCleanupFn,
+        );
+      }
+      this.#transitionCleanupFn = cleanup;
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!this.nodes || !this.nodes.transform) {
+            return;
+          }
+
+          this.nodes.transform.style.transition = `transform ${transCss}`;
+          this.nodes.transform.style.transform = `translate(0px, 0px) scale(${this.state.baseScale})`;
+
+          if (img) {
+            img.style.transition = `all ${transCss}`;
+            img.style.width = `${finalWidth}px`;
+            img.style.height = `${finalHeight}px`;
+            img.style.borderRadius = '0px';
+            img.style.objectFit = 'contain';
+            img.style.filter = '';
+          }
+
+          this.nodes.transform.addEventListener('transitionend', cleanup);
+        });
+      });
+
+      return true;
+    }
+
+    #playStandardSlideIn(direction) {
+      const img = this.nodes && this.nodes.imgNode;
+      if (!img || !this.nodes || !this.nodes.transform) {
+        this.#openTransitionInProgress = false;
+        return false;
+      }
+
+      const dir = direction || 0;
+
+      if (dir) {
+        this.nodes.transform.style.transition = 'none';
+        this.nodes.transform.style.transform = `translate(${dir * SLIDE_OFFSET}px, 0px) scale(${SLIDE_SCALE_INITIAL})`;
+        img.style.opacity = '0';
+      } else {
+        this.nodes.transform.style.transition = 'none';
+        this.nodes.transform.style.transform = `translate(0px, 0px) scale(${this.state.baseScale})`;
+        img.style.opacity = '1';
+      }
+
+      requestAnimationFrame(() => {
+        this.nodes.transform.style.transition = `transform ${SLIDE_IN_DURATION}ms cubic-bezier(0.3, 1, 0.3, 1)`;
+        this.nodes.transform.style.transform = `translate(0px, 0px) scale(${this.state.baseScale})`;
+        img.style.transition = `opacity ${SLIDE_IN_OPACITY_DURATION}ms ease`;
+        img.style.opacity = '1';
+
+        const cleanup = (event) => {
+          if (event && event.target !== this.nodes.transform) {
+            return;
+          }
+
+          if (this.nodes && this.nodes.transform) {
+            this.nodes.transform.removeEventListener('transitionend', cleanup);
+          }
+          this.#transitionCleanupFn = null;
+          this.#openTransitionInProgress = false;
+          this.#renderActive = true;
+          this.#startRenderLoop();
+
+          this.nodes.transform.style.transition = '';
+          this.nodes.transform.style.transform = `translate(${this.renderState.translateX}px, ${this.renderState.translateY}px) scale(${this.renderState.scale})`;
+          img.style.transition = '';
+        };
+
+        if (this.#transitionCleanupFn && this.nodes.transform) {
+          this.nodes.transform.removeEventListener(
+            'transitionend',
+            this.#transitionCleanupFn,
+          );
+        }
+        this.#transitionCleanupFn = cleanup;
+
+        this.nodes.transform.addEventListener('transitionend', cleanup);
+      });
+
+      return true;
+    }
+
+    #scheduleCloseFlybackSync() {
+      if (!this.#closeFlybackState) {
+        return;
+      }
+
+      if (this.#closeFlybackSyncRaf !== null) {
+        return;
+      }
+
+      this.#closeFlybackSyncRaf = requestAnimationFrame(() => {
+        this.#closeFlybackSyncRaf = null;
+        this.#syncCloseFlybackTarget();
+      });
+    }
+
+    #scheduleCloseFlybackCompletion() {
+      const state = this.#closeFlybackState;
+      if (!state) {
+        return;
+      }
+
+      if (this.#closeFlybackCompletionTimer) {
+        clearTimeout(this.#closeFlybackCompletionTimer);
+        this.#pendingTimers.delete(this.#closeFlybackCompletionTimer);
+      }
+
+      this.#closeFlybackCompletionTimer = this.#addTimer(() => {
+        this.#closeFlybackCompletionTimer = null;
+        this.#stopCloseFlybackTracking();
+
+        if (this.state.open || !state.overlay) {
+          return;
+        }
+
+        state.overlay.classList.remove(CLASS_OPEN);
+        state.overlay.setAttribute('aria-hidden', 'true');
+        this.#finishClose(state.overlay, state.lastFocused);
+      }, SHARED_ELEMENT_TRANSITION_DURATION);
+    }
+
+    #getCloseFlybackTargetMetrics(state) {
+      const liveRect = state.element.getBoundingClientRect();
+      const useLiveRect = liveRect && liveRect.width > 0 && liveRect.height > 0;
+      const rect = useLiveRect
+        ? liveRect
+        : state.snapshot && state.snapshot.rect;
+
+      if (!rect || rect.width <= 0 || rect.height <= 0) {
+        return null;
+      }
+
+      const style = useLiveRect
+        ? window.getComputedStyle(state.element)
+        : state.snapshot;
+
+      return {
+        rect,
+        style,
+      };
+    }
+
+    #applyCloseFlybackTarget(targetRect, canvasRect, style, immediate = false) {
+      const targetWidth = targetRect.width;
+      const targetHeight = targetRect.height;
+      const targetFilter = style.filter !== 'none' ? style.filter : '';
+      const destX =
+        targetRect.left +
+        targetWidth * CENTER_OFFSET -
+        canvasRect.left -
+        canvasRect.width * CENTER_OFFSET;
+      const destY =
+        targetRect.top +
+        targetHeight * CENTER_OFFSET -
+        canvasRect.top -
+        canvasRect.height * CENTER_OFFSET;
+
+      if (immediate) {
+        this.nodes.transform.style.transition = 'none';
+        this.nodes.imgNode.style.transition = 'none';
+      }
+
+      this.nodes.transform.style.transform = `translate(${destX}px, ${destY}px) scale(1)`;
+      this.nodes.imgNode.style.borderRadius = style.borderRadius;
+      this.nodes.imgNode.style.width = `${targetWidth}px`;
+      this.nodes.imgNode.style.height = `${targetHeight}px`;
+      this.nodes.imgNode.style.objectFit = style.objectFit || 'cover';
+      this.nodes.imgNode.style.objectPosition =
+        style.objectPosition || 'center';
+      this.nodes.imgNode.style.filter = targetFilter;
+
+      if (this.nodes.bg) {
+        this.nodes.bg.style.opacity = '0';
+      }
+    }
+
+    #syncCloseFlybackTarget() {
+      const state = this.#closeFlybackState;
+      if (
+        !state ||
+        !state.element ||
+        !this.nodes ||
+        !this.nodes.transform ||
+        !this.nodes.imgNode ||
+        !this.nodes.canvas
+      ) {
+        return false;
+      }
+
+      const targetMetrics = this.#getCloseFlybackTargetMetrics(state);
+      if (!targetMetrics || !targetMetrics.style) {
+        return false;
+      }
+
+      const canvasRect = this.nodes.canvas.getBoundingClientRect();
+      const immediate = Boolean(state.hasSynced);
+      this.#applyCloseFlybackTarget(
+        targetMetrics.rect,
+        canvasRect,
+        targetMetrics.style,
+        immediate,
+      );
+      state.hasSynced = true;
+
+      this.#scheduleCloseFlybackCompletion();
+      return true;
+    }
+
+    #stopCloseFlybackTracking() {
+      const state = this.#closeFlybackState;
+
+      if (state && state.scrollListener) {
+        window.removeEventListener('scroll', state.scrollListener);
+      }
+      if (state && state.resizeListener) {
+        window.removeEventListener('resize', state.resizeListener);
+      }
+      if (this.#closeFlybackSyncRaf !== null) {
+        cancelAnimationFrame(this.#closeFlybackSyncRaf);
+        this.#closeFlybackSyncRaf = null;
+      }
+      if (this.#closeFlybackCompletionTimer) {
+        clearTimeout(this.#closeFlybackCompletionTimer);
+        this.#pendingTimers.delete(this.#closeFlybackCompletionTimer);
+        this.#closeFlybackCompletionTimer = null;
+      }
+
+      this.#closeFlybackState = null;
+    }
+
+    #startCloseFlyback(item, overlay, lastFocused) {
+      this.#stopCloseFlybackTracking();
+
+      const target = item && item.el;
+      if (
+        !target ||
+        !this.nodes ||
+        !this.nodes.transform ||
+        !this.nodes.imgNode ||
+        !this.nodes.canvas
+      ) {
+        return false;
+      }
+
+      const snapshot = this.#captureThumbnailSnapshot(target);
+      if (!snapshot) {
+        return false;
+      }
+
+      const currentImgWidth =
+        this.nodes.imgNode.naturalWidth || this.nodes.imgNode.clientWidth;
+      const currentImgHeight =
+        this.nodes.imgNode.naturalHeight || this.nodes.imgNode.clientHeight;
+      const transCss = `${SHARED_ELEMENT_TRANSITION_DURATION}ms ${SHARED_ELEMENT_TRANSITION_EASING}`;
+
+      this.nodes.transform.style.transition = 'none';
+      this.nodes.imgNode.style.transition = 'none';
+      this.nodes.imgNode.style.width = `${currentImgWidth}px`;
+      this.nodes.imgNode.style.height = `${currentImgHeight}px`;
+      this.nodes.imgNode.style.objectFit = 'contain';
+
+      void this.nodes.transform.offsetWidth;
+      void this.nodes.imgNode.offsetWidth;
+
+      const scheduleSync = () => this.#scheduleCloseFlybackSync();
+
+      this.#closeFlybackState = {
+        element: target,
+        snapshot,
+        overlay,
+        lastFocused,
+        hasSynced: false,
+        scrollListener: scheduleSync,
+        resizeListener: scheduleSync,
+      };
+
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!this.#closeFlybackState || this.state.open) {
+            return;
+          }
+
+          if (this.nodes.transform) {
+            this.nodes.transform.style.transition = `transform ${transCss}`;
+          }
+          if (this.nodes.imgNode) {
+            this.nodes.imgNode.style.transition = `all ${transCss}`;
+          }
+          if (this.nodes.bg) {
+            this.nodes.bg.style.transition = `opacity ${transCss}`;
+          }
+
+          window.addEventListener('scroll', scheduleSync, { passive: true });
+          window.addEventListener('resize', scheduleSync, { passive: true });
+
+          this.#syncCloseFlybackTarget();
+        });
+      });
+
+      return true;
+    }
+
+    #resetCloseState(wasClosedViaSwipe) {
+      this.#resetCloseTimers();
+      this.#resetCloseInteractionFlags(wasClosedViaSwipe);
+      this.#resetCloseCalibrationState();
+    }
+
+    #resetCloseTimers() {
+      if (this.#rafId) {
+        cancelAnimationFrame(this.#rafId);
+        this.#rafId = null;
+      }
+
+      if (this.#transitionCleanupFn && this.nodes && this.nodes.transform) {
+        this.nodes.transform.removeEventListener(
+          'transitionend',
+          this.#transitionCleanupFn,
+        );
+        this.#transitionCleanupFn = null;
+      }
+      this.#openTransitionInProgress = false;
+
+      this.#exitFullscreen();
+      this.#updateFullscreenButton();
+      if (this.#uiHideTimer) {
+        clearTimeout(this.#uiHideTimer);
+        this.#pendingTimers.delete(this.#uiHideTimer);
+      }
+      if (this.#wheelSwipeTimer) {
+        clearTimeout(this.#wheelSwipeTimer);
+        this.#pendingTimers.delete(this.#wheelSwipeTimer);
+      }
+      if (this.#uiShowTimer) {
+        clearTimeout(this.#uiShowTimer);
+        this.#pendingTimers.delete(this.#uiShowTimer);
+      }
+      this.#exitFullscreen();
+      this.#updateFullscreenButton();
+    }
+
+    #resetCloseInteractionFlags(wasClosedViaSwipe) {
+      if (wasClosedViaSwipe) {
+        this.#blockInertialScrolling();
+      } else {
+        document.documentElement.style.overflow = '';
+      }
+
+      this.state.open = false;
+      this.state.fullscreen = false;
+      this.#renderActive = false;
+      this.#wheelSwipeAccum = 0;
+      this.#wheelMode = null;
+      this.#lastSwipeNavTime = 0;
+      this.#swipeModeLocked = false;
+      this.#lastWheelDeltaX = 0;
+      this.#pendingSlideDir = 0;
+
+      if (this.#isVerticalSwipe || this.#trackpadSwipeToClose) {
+        this.#lastSwipeCloseTime = window.performance.now();
+      }
+      this.#isVerticalSwipe = false;
+      this.#trackpadSwipeToClose = false;
+      this.#swipeIntent = false;
+
+      this.#hideUi();
+    }
+
+    #resetCloseCalibrationState() {
+      if (this.#pendingCalibrationListener) {
+        window.removeEventListener('wheel', this.#pendingCalibrationListener);
+        this.#pendingCalibrationListener = null;
+      }
+      if (this.calibrationActive && this.nodes.calibration) {
+        this.#cleanupCalibrationHandlers();
+        this.#removeCalibrationNodes();
+        this.calibrationActive = false;
+        this.calibrationSource = null;
+      }
+    }
+
     #playSlideIn(direction) {
       const img = this.nodes && this.nodes.imgNode;
       if (!img) {
-        return;
+        this.#openTransitionInProgress = false;
+        return false;
       }
+
       const dir = direction || 0;
-      img.style.transition = 'none';
-      if (dir) {
-        img.style.transform = `translateX(${dir * SLIDE_OFFSET}px) scale(${SLIDE_SCALE_INITIAL})`;
-        img.style.opacity = '0';
-      } else {
-        img.style.transform = 'translateX(0) scale(1)';
-        img.style.opacity = '1';
+      const liveSnapshot =
+        dir === 0
+          ? this.#captureThumbnailSnapshot(this.#activeThumbnail)
+          : null;
+      const snapshot = liveSnapshot || this.#openThumbnailSnapshot;
+
+      if (dir === 0 && snapshot) {
+        this.#openThumbnailSnapshot = snapshot;
+        const started = this.#startSharedElementOpen(snapshot, img);
+        if (!started) {
+          this.#openTransitionInProgress = false;
+        }
+        return started;
       }
-      requestAnimationFrame(() => {
-        img.style.transition = `transform ${SLIDE_IN_DURATION}ms cubic-bezier(0.3, 1, 0.3, 1), opacity ${SLIDE_IN_OPACITY_DURATION}ms ease`;
-        img.style.transform = 'translateX(0) scale(1)';
-        img.style.opacity = '1';
-        const cleanup = () => {
-          img.style.transition = '';
-          img.style.transform = '';
-          img.removeEventListener('transitionend', cleanup);
-        };
-        img.addEventListener('transitionend', cleanup, { once: true });
-      });
+
+      const started = this.#playStandardSlideIn(dir);
+      if (!started) {
+        this.#openTransitionInProgress = false;
+      }
+      return started;
     }
 
     #bindPinch() {
@@ -2294,9 +2867,16 @@
         return;
       }
 
+      this.#stopCloseFlybackTracking();
+      this.#openThumbnailSnapshot = this.#captureThumbnailSnapshot(
+        collection.items[safeItemIndex].el,
+      );
+      this.#openTransitionInProgress = true;
+
       this.state.open = true;
       this.state.collectionIndex = safeCollectionIndex;
       this.state.itemIndex = safeItemIndex;
+      this.#activeThumbnail = collection.items[safeItemIndex].el;
       // UI is hidden by default, will show on user activity
       this.#showOverlay();
       this.#checkCalibration();
@@ -2320,13 +2900,15 @@
         }
 
         const handleTransitionEnd = (e) => {
-          if (e.target !== this.overlay) {
+          if (e && e.target !== this.nodes.bg) {
             return;
           }
-          this.overlay.removeEventListener(
-            'transitionend',
-            handleTransitionEnd,
-          );
+          if (this.nodes.bg) {
+            this.nodes.bg.removeEventListener(
+              'transitionend',
+              handleTransitionEnd,
+            );
+          }
           if (!this.state.open) {
             return;
           }
@@ -2335,7 +2917,18 @@
           this.#scheduleUiHide();
         };
 
-        this.overlay.addEventListener('transitionend', handleTransitionEnd);
+        if (this.nodes.bg) {
+          this.nodes.bg.addEventListener('transitionend', handleTransitionEnd);
+          // Fallback in case transition gets cancelled
+          setTimeout(() => {
+            if (
+              this.state.open &&
+              this.nodes.ui.classList.contains(CLASS_UI_HIDDEN)
+            ) {
+              handleTransitionEnd({ target: this.nodes.bg });
+            }
+          }, UI_TRANSITION_FALLBACK_DELAY);
+        }
       });
     }
 
@@ -2353,6 +2946,12 @@
       }
       this.#cleanupManagedListeners();
       uninitAuto();
+      this.#stopCloseFlybackTracking();
+      this.#openThumbnailSnapshot = null;
+      if (this.#activeThumbnail) {
+        this.#activeThumbnail.style.visibility = '';
+        this.#activeThumbnail = null;
+      }
 
       // Clean up manually attached listeners and DOM pollution
       this.#trackedElements.forEach((ref) => {
@@ -2426,59 +3025,127 @@
       }
       const overlay = this.overlay;
       const lastFocused = this.#lastFocused;
-      this.overlay.classList.remove(CLASS_OPEN);
-      this.overlay.setAttribute('aria-hidden', 'true');
-      document.documentElement.style.overflow = '';
-      this.state.open = false;
-      this.state.fullscreen = false;
-      this.#exitFullscreen();
-      this.#updateFullscreenButton();
-      if (this.#uiHideTimer) {
-        clearTimeout(this.#uiHideTimer);
-        this.#pendingTimers.delete(this.#uiHideTimer);
-      }
-      if (this.#wheelSwipeTimer) {
-        clearTimeout(this.#wheelSwipeTimer);
-        this.#pendingTimers.delete(this.#wheelSwipeTimer);
-      }
-      if (this.#uiShowTimer) {
-        clearTimeout(this.#uiShowTimer);
-        this.#pendingTimers.delete(this.#uiShowTimer);
-      }
-      this.#wheelSwipeAccum = 0;
-      this.#wheelMode = null;
-      this.#lastSwipeNavTime = 0;
-      this.#swipeModeLocked = false;
-      this.#lastWheelDeltaX = 0;
-      this.#pendingSlideDir = 0;
 
-      if (this.#isVerticalSwipe || this.#trackpadSwipeToClose) {
-        this.#lastSwipeCloseTime = window.performance.now();
-      }
-      this.#isVerticalSwipe = false;
-      this.#trackpadSwipeToClose = false;
-      this.#swipeIntent = false;
+      const item =
+        this.collections[this.state.collectionIndex]?.items[
+          this.state.itemIndex
+        ];
+      const performFlyToTarget =
+        item && item.el && this.nodes.transform && overlay;
 
-      this.#hideUi();
-      if (this.#pendingCalibrationListener) {
-        window.removeEventListener('wheel', this.#pendingCalibrationListener);
-        this.#pendingCalibrationListener = null;
+      // Delay removing CLASS_OPEN if flying back to thumbnail
+      if (!performFlyToTarget) {
+        this.overlay.classList.remove(CLASS_OPEN);
+        this.overlay.setAttribute('aria-hidden', 'true');
       }
-      if (this.calibrationActive && this.nodes.calibration) {
-        this.#cleanupCalibrationHandlers();
-        this.#removeCalibrationNodes();
-        this.calibrationActive = false;
-        this.calibrationSource = null;
+
+      const wasClosedViaSwipe =
+        this.#isVerticalSwipe || this.#trackpadSwipeToClose;
+
+      this.#resetCloseState(wasClosedViaSwipe);
+
+      const flybackStarted =
+        Boolean(performFlyToTarget) &&
+        this.#startCloseFlyback(item, overlay, lastFocused);
+
+      if (!flybackStarted) {
+        this.overlay.classList.remove(CLASS_OPEN);
+        this.overlay.setAttribute('aria-hidden', 'true');
+
+        // Fallback delay to allow basic CSS animation
+        this.#addTimer(() => {
+          this.#finishClose(overlay, lastFocused);
+        }, CLOSE_DELAY);
       }
-      // small delay to allow animation
-      this.#addTimer(() => {
-        if (!this.state.open && overlay) {
-          overlay.style.display = 'none';
+    }
+
+    #finishClose(overlay, lastFocused) {
+      this.#stopCloseFlybackTracking();
+
+      if (!this.state.open && overlay) {
+        overlay.style.display = 'none';
+
+        // Wait 1 frame so `display: none` completely hides the element from the render tree
+        // BEFORE we reset inline inline transform and dimensions
+        requestAnimationFrame(() => {
+          if (this.state.open) {
+            return; // Abort if user reopened it instantly
+          }
+
+          if (this.nodes && this.nodes.transform) {
+            this.nodes.transform.style.transition = '';
+            this.nodes.transform.style.transform = '';
+          }
+          if (this.nodes && this.nodes.imgNode) {
+            this.nodes.imgNode.style.transition = '';
+            this.nodes.imgNode.style.borderRadius = '';
+            this.nodes.imgNode.style.width = '';
+            this.nodes.imgNode.style.height = '';
+            this.nodes.imgNode.style.objectFit = '';
+            this.nodes.imgNode.style.objectPosition = '';
+            this.nodes.imgNode.style.filter = '';
+          }
+          if (this.nodes && this.nodes.bg) {
+            this.nodes.bg.style.transition = '';
+            this.nodes.bg.style.opacity = '';
+          }
+          this.#resetNodeOpacities();
+          this.#openThumbnailSnapshot = null;
+
+          // Restore original thumbnail completely when modal closes
+          if (this.#activeThumbnail) {
+            this.#activeThumbnail.style.visibility = '';
+            this.#activeThumbnail = null;
+          }
+        });
+      }
+      if (lastFocused && typeof lastFocused.focus === 'function') {
+        lastFocused.focus();
+      }
+    }
+
+    #blockInertialScrolling() {
+      // Keep overflow hidden temporarily to prevent the scroll boundary from moving
+      document.documentElement.style.overflow = 'hidden';
+
+      let scrollTimer = null;
+      const startedAt = window.performance.now();
+
+      const blockScroll = (e) => {
+        // Block all wheels
+        e.preventDefault();
+
+        if (scrollTimer) {
+          clearTimeout(scrollTimer);
         }
-        if (lastFocused && typeof lastFocused.focus === 'function') {
-          lastFocused.focus();
+
+        // Safety timeout to prevent locking scroll indefinitely (2s max)
+        if (
+          window.performance.now() - startedAt >
+          CLOSE_SCROLL_LOCK_MAX_DURATION
+        ) {
+          cleanup();
+          return;
         }
-      }, CLOSE_DELAY);
+
+        // If no new wheel event happens within 100ms, the trackpad has settled entirely
+        scrollTimer = setTimeout(cleanup, CLOSE_SCROLL_LOCK_IDLE_DELAY);
+      };
+
+      const cleanup = () => {
+        window.removeEventListener('wheel', blockScroll, { passive: false });
+        if (scrollTimer) {
+          clearTimeout(scrollTimer);
+        }
+        // Document overflow is unlocked
+        document.documentElement.style.overflow = '';
+      };
+
+      // We must use non-passive event listener to allow preventDefault
+      window.addEventListener('wheel', blockScroll, { passive: false });
+
+      // Fallback cleanup if the user doesn't scroll at all after close fires
+      scrollTimer = setTimeout(cleanup, CLOSE_SCROLL_LOCK_IDLE_DELAY);
     }
 
     /**
@@ -2524,61 +3191,40 @@
       }
     }
 
-    #loadItem() {
-      const currentCollection = this.collections[this.state.collectionIndex];
-      if (!currentCollection) {
-        return;
+    #setActiveThumbnail(element) {
+      if (this.#activeThumbnail && this.#activeThumbnail !== element) {
+        this.#activeThumbnail.style.visibility = '';
       }
-      const item = currentCollection.items[this.state.itemIndex];
-      if (!item) {
-        return;
-      }
+      this.#activeThumbnail = element;
+    }
 
-      // Capture requested slide direction immediately so rapid successive
-      // navigations do not lose the intended animation direction.
-      const slideDir = this.#pendingSlideDir || 0;
-      this.#pendingSlideDir = 0;
-
-      this.#resetRenderState();
-      this.#updateNavVisibility();
-
-      // show spinner while loading
+    #updateLoadStatus(item, currentCollection) {
       this.nodes.imgNode.style.opacity = '0';
       this.nodes.imgNode.src = '';
       this.nodes.counter.textContent = `${this.state.itemIndex + 1} / ${
         currentCollection.items.length
       }`;
       this.#updateCaption(item.caption);
+
       if (this.liveRegion) {
         this.liveRegion.textContent = `Image ${this.state.itemIndex + 1} of ${
           currentCollection.items.length
         }${item.caption ? ': ' + item.caption : ''}`;
       }
+    }
 
-      const safeSrc = this.#getSafeImageUrl(item.src);
-      if (!safeSrc) {
-        this.#updateCaption('Invalid image URL');
-        if (this.liveRegion) {
-          this.liveRegion.textContent = 'Invalid image URL blocked for safety.';
-        }
-        return;
-      }
-
-      // Load image directly into the overlay image node. This is simpler
-      // and avoids some preload/CORS race conditions with separate Image().
-      const node = this.nodes.imgNode;
-      // Remove previous handlers to avoid multiple invocations
+    #bindImageNode(node, safeSrc, slideDir) {
       node.onload = null;
       node.onerror = null;
 
       node.style.opacity = '0';
-      node.src = ''; // clear current
+      node.src = '';
 
       node.onload = () => {
-        // Fit by height and show
+        node.onload = null;
+
         requestAnimationFrame(() => {
           this.#fitImageToViewport();
-          this.#applyTransform({ immediate: true });
           this.#playSlideIn(slideDir);
         });
       };
@@ -2587,9 +3233,9 @@
         node.src = '';
         this.#updateCaption('Failed to load image');
         node.style.opacity = '1';
+        this.#openTransitionInProgress = false;
       };
 
-      // Trigger load
       node.src = safeSrc;
       if (/\.svg($|\?)/i.test(safeSrc)) {
         node.classList.add('spot-svg');
@@ -2601,12 +3247,50 @@
       } else {
         node.classList.remove('spot-svg');
       }
-      if (node.complete && node.naturalWidth) {
-        // cached image won't fire onload
-        if (typeof node.onload === 'function') {
-          node.onload();
-        }
+
+      if (
+        node.complete &&
+        node.naturalWidth &&
+        typeof node.onload === 'function'
+      ) {
+        node.onload();
       }
+    }
+
+    #loadItem() {
+      const currentCollection = this.collections[this.state.collectionIndex];
+      if (!currentCollection) {
+        return;
+      }
+      const item = currentCollection.items[this.state.itemIndex];
+      if (!item) {
+        return;
+      }
+
+      this.#setActiveThumbnail(item.el);
+
+      // Capture requested slide direction immediately so rapid successive
+      // navigations do not lose the intended animation direction.
+      const slideDir = this.#pendingSlideDir || 0;
+      this.#pendingSlideDir = 0;
+
+      this.#resetRenderState();
+      this.#updateNavVisibility();
+      this.#updateLoadStatus(item, currentCollection);
+
+      const safeSrc = this.#getSafeImageUrl(item.src);
+      if (!safeSrc) {
+        this.#updateCaption('Invalid image URL');
+        this.#openTransitionInProgress = false;
+        if (this.liveRegion) {
+          this.liveRegion.textContent = 'Invalid image URL blocked for safety.';
+        }
+        return;
+      }
+
+      // Load image directly into the overlay image node. This is simpler
+      // and avoids some preload/CORS race conditions with separate Image().
+      this.#bindImageNode(this.nodes.imgNode, safeSrc, slideDir);
     }
 
     #updateCaption(text) {
@@ -2720,30 +3404,147 @@
       }
     }
 
-    #updateSwipeAnimation(translateY) {
-      // For trackpad swipes, allow animation at any zoom level (trackpad uses different gesture for pan)
-      // For touch swipes, only animate when zoomed out
+    #shouldAnimateSwipe(translateY) {
       const isZoomedOut =
         Math.abs(this.state.scale - (this.state.baseScale || 1)) <
         PAN_THRESHOLD;
-
-      // Allow animation if: zoomed out OR it's a trackpad-initiated swipe
-      const allowAnimation = isZoomedOut || this.#trackpadSwipeToClose;
-
-      if (
-        translateY > 0 &&
+      return (
         this.state.open &&
-        allowAnimation &&
-        this.#swipeIntent
-      ) {
-        const progress = Math.min(
-          1,
-          Math.abs(translateY) / SWIPE_CLOSE_DIVISOR,
-        );
-        this.#setNodeOpacities(1 - progress);
-      } else {
-        this.#resetNodeOpacities();
+        this.#swipeIntent &&
+        (isZoomedOut || this.#trackpadSwipeToClose) &&
+        Number.isFinite(translateY)
+      );
+    }
+
+    #clearSwipeAnimationEffects() {
+      this.#resetNodeOpacities();
+      if (this.nodes && this.nodes.imgNode) {
+        this.nodes.imgNode.style.borderRadius = '';
       }
+    }
+
+    #applySwipeAnimationOpacity(absY, bgProgress) {
+      const uiProgress = Math.min(
+        1,
+        absY / (SWIPE_CLOSE_DIVISOR / SWIPE_CLOSE_UI_PROGRESS_RATIO),
+      );
+      const uiOpacity = Math.max(0, 1 - uiProgress);
+      const bgOpacity = Math.max(0, 1 - bgProgress);
+
+      this.#fadeableNodes.forEach((node) => {
+        if (node && node !== this.nodes.bg && node !== this.nodes.imgNode) {
+          node.style.opacity = String(uiOpacity);
+        }
+      });
+      if (this.nodes.bg) {
+        this.nodes.bg.style.opacity = String(bgOpacity);
+      }
+    }
+
+    #applySwipeAnimationTransform(bgProgress) {
+      const maxScaleReduction = 0.3;
+      const scaleOffset = 1 - bgProgress * maxScaleReduction;
+      if (this.nodes.transform) {
+        this.nodes.transform.style.transform = `translate(${this.renderState.translateX}px, ${this.renderState.translateY}px) scale(${this.renderState.scale * scaleOffset})`;
+      }
+    }
+
+    #applySwipeAnimationRadius(bgProgress) {
+      let targetRadius = 0;
+      const item =
+        this.collections[this.state.collectionIndex]?.items[
+          this.state.itemIndex
+        ];
+      if (item && item.el) {
+        const style = window.getComputedStyle(item.el);
+        const rawRadius = parseFloat(style.borderRadius);
+        if (!isNaN(rawRadius)) {
+          targetRadius = rawRadius;
+        }
+      }
+      if (targetRadius === 0) {
+        targetRadius = SWIPE_THUMBNAIL_RADIUS_FALLBACK;
+      }
+
+      if (this.nodes.imgNode) {
+        this.nodes.imgNode.style.borderRadius = `${targetRadius * bgProgress}px`;
+      }
+    }
+
+    #updateSwipeAnimation(translateY) {
+      if (!this.#shouldAnimateSwipe(translateY)) {
+        this.#clearSwipeAnimationEffects();
+        return;
+      }
+
+      // Image itself does never become transparent during swipe
+      // Only UI disappears fast when dragged away from center
+      const absY = Math.abs(translateY);
+      const bgProgress = Math.min(1, absY / SWIPE_DOWN_THRESHOLD);
+
+      this.#applySwipeAnimationOpacity(absY, bgProgress);
+      this.#applySwipeAnimationTransform(bgProgress);
+      this.#applySwipeAnimationRadius(bgProgress);
+    }
+
+    #handleVerticalPointerSwipeMove(e) {
+      const dx = e.clientX - this.#dragLast.x;
+      const dy = e.clientY - this.#dragLast.y;
+      const dt =
+        window.performance.now() -
+        (this.#dragLast.time || window.performance.now());
+
+      if (dt > 0) {
+        this.#dragVelocity.y = dy / dt;
+      }
+
+      const { dx: dDx, dy: dDy } = this.#applyFriction(dx, dy);
+
+      this.state.translateX += dDx;
+      this.state.translateY += dDy;
+
+      this.#dragLast.x = e.clientX;
+      this.#dragLast.y = e.clientY;
+      this.#dragLast.time = window.performance.now();
+      this.#startRenderLoop();
+    }
+
+    #handleTouchSwipeCloseMove(e) {
+      if (
+        e.pointerType !== 'touch' ||
+        Math.abs(this.state.scale - (this.state.baseScale || 1)) >=
+          PAN_THRESHOLD
+      ) {
+        return false;
+      }
+
+      const dx = e.clientX - this.#dragLast.x;
+      const dy = e.clientY - this.#dragLast.y;
+      if (Math.abs(dy) <= Math.abs(dx)) {
+        return false;
+      }
+
+      this.#isVerticalSwipe = true;
+      this.#swipeIntent = true;
+
+      const { dx: dDx, dy: dDy } = this.#applyFriction(dx, dy);
+
+      this.state.translateY += dDy;
+      this.state.translateX += dDx;
+
+      const dt =
+        window.performance.now() -
+        (this.#dragLast.time || window.performance.now());
+      if (dt > 0) {
+        this.#dragVelocity.x = dx / dt;
+        this.#dragVelocity.y = dy / dt;
+      }
+
+      this.#dragLast.x = e.clientX;
+      this.#dragLast.y = e.clientY;
+      this.#dragLast.time = window.performance.now();
+      this.#startRenderLoop();
+      return true;
     }
 
     /**
@@ -2875,6 +3676,47 @@
       this.state.translateX = 0;
       this.state.translateY = 0;
       this.#startRenderLoop();
+    }
+
+    /**
+     * Applies rubber-band friction to dx/dy when approaching screen edges.
+     * Prevents the image from flying offscreen during swipe-to-close gestures.
+     * @param {number} dx - Raw horizontal delta
+     * @param {number} dy - Raw vertical delta
+     * @returns {{dx: number, dy: number}} Damped deltas
+     */
+    #applyFriction(dx, dy) {
+      let dDy = dy;
+      let dDx = dx;
+      const ty = this.state.translateY;
+      const tx = this.state.translateX;
+      const maxY = window.innerHeight / FRICTION_Y_MAX;
+      const maxX = window.innerWidth / FRICTION_X_SCALE;
+
+      // Vertical friction: rubber band at top edge (translateY < 0)
+      if (ty + dDy < 0) {
+        const dampen = Math.max(
+          FRICTION_DAMPEN_MIN,
+          Math.exp((ty + dDy) / FRICTION_EXP_SCALE),
+        );
+        dDy *= dampen * FRICTION_MULTIPLIER;
+      } else if (ty + dDy > maxY) {
+        const overflow = ty + dDy - maxY;
+        const dampen = Math.max(
+          FRICTION_DAMPEN_MIN,
+          Math.exp(-overflow / FRICTION_EXP_SCALE),
+        );
+        dDy *= dampen * FRICTION_MULTIPLIER;
+      }
+
+      // Horizontal friction: strong exponential pull-back
+      const dampenX = Math.max(
+        FRICTION_X_MIN,
+        Math.exp(-Math.abs(tx + dDx) / maxX),
+      );
+      dDx *= dampenX * FRICTION_X_MULTIPLIER;
+
+      return { dx: dDx, dy: dDy };
     }
 
     /**
@@ -3160,12 +4002,11 @@
           background: rgba(245,245,245,0.98);
         }
       }
-      #spot-overlay { all: initial; display:none; position:fixed; inset:0; z-index:2147483646; font-family:var(--spot-font); -webkit-font-smoothing:antialiased; opacity:0; transition:opacity var(--spot-anim); touch-action:none; direction: ltr; }
+      #spot-overlay { all: initial; display:none; position:fixed; inset:0; z-index:2147483646; font-family:var(--spot-font); -webkit-font-smoothing:antialiased; touch-action:none; direction: ltr; }
       #spot-overlay, #spot-overlay * { -webkit-user-select:none; user-select:none; }
-      #spot-overlay.spot-open { pointer-events:auto; opacity:1; }
+      #spot-overlay.spot-open { pointer-events:auto; }
       #spot-bg { position:fixed; inset:0; background:var(--spot-bg); transition:opacity var(--spot-anim); opacity:0; }
-      #spot-shell { position:fixed; inset:0; pointer-events:none; opacity:0; transform:scale(0.9); transition:opacity var(--spot-anim), transform var(--spot-anim); }
-      #spot-overlay.spot-open #spot-shell { opacity:1; transform:scale(1); }
+      #spot-shell { position:fixed; inset:0; pointer-events:none; }
       #spot-overlay.spot-open #spot-bg { opacity:1; }
       #spot-stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:2147483645; }
       #spot-canvas { position:absolute; inset:0; overflow:hidden; pointer-events:auto; display:flex; align-items:center; justify-content:center; }
@@ -3250,19 +4091,19 @@
         :root { --spot-anim: 0s; }
         #spot-transform { transition: none; }
       }
-      
+
       /* Calibration */
       .spot-calibration { position:fixed; inset:0; z-index:2147483660; background:rgba(0,0,0,0.85); display:flex; align-items:center; justify-content:center; opacity:0; pointer-events:none; transition:opacity 0.3s ease; }
       .spot-calibration.visible { opacity:1; pointer-events:auto; }
       .spot-calibration-content { background:var(--spot-ui-bg); color:var(--spot-ui-fg); padding:40px; border-radius:12px; text-align:center; max-width:400px; box-shadow:var(--spot-shadow); backdrop-filter:blur(10px); }
       .spot-calibration h3 { margin:0 0 15px; font-size:20px; }
       .spot-calibration p { margin:0; opacity:0.8;}
-      
+
       /* Trackpad Animation Styles */
       .trackpad-container { transform: scale(0.6); margin: 0 auto; width: 400px; }
       .trackpad { width: 400px; height: 250px; background: #ffffff; border-radius: 20px; border: 2px solid #ccc; position: relative; overflow: hidden; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1); margin: 0 auto; }
       .finger { width: 32px; height: 32px; background: #007AFF; box-shadow: 0 2px 10px rgba(0, 122, 255, 0.4); border-radius: 50%; position: absolute; }
-      
+
       .spot-progress-bar { width: 100%; height: 9px; background: rgba(128,128,128,0.2); border-radius: 6px; overflow: hidden; }
       .spot-progress-value { width: 0%; height: 100%; background: #007AFF; transition: width 0.1s linear; }
 
@@ -3445,19 +4286,11 @@
       }
 
       if (this.#isVerticalSwipe) {
-        const dy = e.clientY - this.#dragLast.y;
-        this.state.translateY += dy;
-        this.#dragLast.x = e.clientX;
-        this.#dragLast.y = e.clientY;
-        this.#startRenderLoop();
+        this.#handleVerticalPointerSwipeMove(e);
         return;
       }
 
-      // Disable pan without zoom on mobile/touch
-      if (
-        e.pointerType === 'touch' &&
-        Math.abs(this.state.scale - (this.state.baseScale || 1)) < PAN_THRESHOLD
-      ) {
+      if (this.#handleTouchSwipeCloseMove(e)) {
         return;
       }
 
