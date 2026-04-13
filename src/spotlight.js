@@ -39,6 +39,8 @@
   const MIN_SCALE_FIT = 0.05; // Minimum scale when fitting to viewport
   const PERCENTAGE = 100; // Multiplier for percentage display
   const CENTER_OFFSET = 0.5; // Center offset for zoom calculation (0.5 = center)
+  const FLOAT_PRECISION = 4; // Decimal precision for computed CSS numeric values
+  const SCALE_EPSILON = 0.0001; // Small epsilon for floating-point scale comparisons
   const TRACKPAD_PINCH_SENSITIVITY = 0.01; // Base sensitivity for trackpad pinch zoom
 
   // --- Pinch Gesture ---
@@ -63,6 +65,7 @@
   const SWIPE_CLOSE_MIN_DISTANCE = 20; // Minimum swipe distance before forcing close
   const SWIPE_CLOSE_VELOCITY_THRESHOLD = 0.5; // Minimum swipe velocity before forcing close
   const SWIPE_CLOSE_UI_PROGRESS_RATIO = 3; // Ratio for swipe-close UI fade timing
+  const SWIPE_SCALE_REDUCTION_BASE = 0.3; // Base scale reduction during swipe-close animation
   const SWIPE_THUMBNAIL_RADIUS_FALLBACK = 12; // Fallback radius for swipe-close thumbnail effect
   const SWIPE_CLOSE_DIVISOR = 150; // Divisor for swipe-to-close animation progress
   const MIN_VISIBLE_RATIO = 0.05; // Min visible fraction when panning image
@@ -381,6 +384,7 @@
     #activeThumbnail = null;
     #openThumbnailSnapshot = null;
     #openTransitionInProgress = false;
+    #deferOverflowUnlockOnClose = false;
     #closeFlybackState = null;
     #closeFlybackSyncRaf = null;
     #closeFlybackCompletionTimer = null;
@@ -2243,23 +2247,254 @@
           height: rect.height,
         },
         borderRadius: style.borderRadius,
-        objectFit: style.objectFit || 'cover',
+        objectFit: this.#normalizeSnapshotObjectFit(style.objectFit),
         objectPosition: style.objectPosition || 'center',
         filter: style.filter !== 'none' ? style.filter : '',
       };
     }
 
-    #startSharedElementOpen(snapshot, img) {
-      if (
-        !snapshot ||
-        !img ||
-        !this.nodes ||
-        !this.nodes.transform ||
-        !this.nodes.canvas
-      ) {
-        return false;
+    #normalizeSnapshotObjectFit(value) {
+      const fit = String(value || '')
+        .trim()
+        .toLowerCase();
+
+      if (!fit) {
+        return 'fill';
       }
 
+      if (
+        fit === 'initial' ||
+        fit === 'inherit' ||
+        fit === 'unset' ||
+        fit === 'revert' ||
+        fit === 'revert-layer'
+      ) {
+        return 'fill';
+      }
+
+      return fit;
+    }
+
+    #resolvePositiveScale(value) {
+      return Number.isFinite(value) && value > 0 ? value : 1;
+    }
+
+    #clampToUnitInterval(value, fallback = CENTER_OFFSET) {
+      if (!Number.isFinite(value)) {
+        return fallback;
+      }
+
+      return Math.min(1, Math.max(0, value));
+    }
+
+    #toPercentString(value) {
+      const safeValue = Math.min(PERCENTAGE, Math.max(0, value));
+      return `${Number(safeValue.toFixed(FLOAT_PRECISION))}%`;
+    }
+
+    #parseObjectPositionToken(token, axis) {
+      if (!token) {
+        return null;
+      }
+
+      const normalized = String(token).trim().toLowerCase();
+
+      if (normalized === 'center') {
+        return CENTER_OFFSET;
+      }
+
+      if (axis === 'x') {
+        if (normalized === 'left') {
+          return 0;
+        }
+        if (normalized === 'right') {
+          return 1;
+        }
+      } else {
+        if (normalized === 'top') {
+          return 0;
+        }
+        if (normalized === 'bottom') {
+          return 1;
+        }
+      }
+
+      const percentMatch = normalized.match(/^(-?\d*\.?\d+)%$/);
+      if (percentMatch) {
+        return this.#clampToUnitInterval(Number(percentMatch[1]) / PERCENTAGE);
+      }
+
+      return null;
+    }
+
+    #resolveSingleCloseFlybackObjectPosition(token) {
+      const x = this.#parseObjectPositionToken(token, 'x');
+      const y = this.#parseObjectPositionToken(token, 'y');
+
+      if (x !== null && y === null) {
+        return { x, y: CENTER_OFFSET };
+      }
+      if (y !== null && x === null) {
+        return { x: CENTER_OFFSET, y };
+      }
+
+      return {
+        x: this.#clampToUnitInterval(x, CENTER_OFFSET),
+        y: this.#clampToUnitInterval(y, CENTER_OFFSET),
+      };
+    }
+
+    #resolveCloseFlybackObjectPositionPair(tokens) {
+      let xToken = tokens[0] || 'center';
+      let yToken = tokens[1] || 'center';
+
+      if (
+        (xToken === 'top' || xToken === 'bottom') &&
+        (yToken === 'left' || yToken === 'right' || yToken === 'center')
+      ) {
+        [xToken, yToken] = [yToken, xToken];
+      }
+
+      return {
+        x: this.#clampToUnitInterval(
+          this.#parseObjectPositionToken(xToken, 'x'),
+          CENTER_OFFSET,
+        ),
+        y: this.#clampToUnitInterval(
+          this.#parseObjectPositionToken(yToken, 'y'),
+          CENTER_OFFSET,
+        ),
+      };
+    }
+
+    #resolveCloseFlybackObjectPositionBias(objectPosition) {
+      const tokens = String(objectPosition || 'center center')
+        .trim()
+        .toLowerCase()
+        .split(/\s+/)
+        .filter(Boolean);
+
+      if (tokens.length === 1) {
+        return this.#resolveSingleCloseFlybackObjectPosition(tokens[0]);
+      }
+
+      return this.#resolveCloseFlybackObjectPositionPair(tokens);
+    }
+
+    #scaleBorderRadiusForTransform(borderRadius, scaleX, scaleY) {
+      if (!borderRadius) {
+        return '';
+      }
+
+      const compensationScale = Math.min(
+        this.#resolvePositiveScale(scaleX),
+        this.#resolvePositiveScale(scaleY),
+      );
+
+      if (Math.abs(compensationScale - 1) < SCALE_EPSILON) {
+        return borderRadius;
+      }
+
+      return String(borderRadius).replace(
+        /(-?\d*\.?\d+)px/g,
+        (match, value) => {
+          const numeric = Number(value);
+          if (!Number.isFinite(numeric)) {
+            return match;
+          }
+          return `${Number((numeric / compensationScale).toFixed(FLOAT_PRECISION))}px`;
+        },
+      );
+    }
+
+    #applyRoundToInsetClipPath(clipPath, borderRadius) {
+      if (!clipPath || !borderRadius) {
+        return clipPath;
+      }
+
+      return String(clipPath).replace(
+        /\)\s*$/,
+        ` round ${String(borderRadius).trim()})`,
+      );
+    }
+
+    #resolveCloseFlybackFitTransform(params) {
+      const {
+        targetWidth,
+        targetHeight,
+        baseWidth,
+        baseHeight,
+        objectFit,
+        objectPosition,
+      } = params;
+      const fit = String(objectFit || 'cover')
+        .trim()
+        .toLowerCase();
+      let scaleX = this.#resolvePositiveScale(targetWidth / baseWidth);
+      let scaleY = this.#resolvePositiveScale(targetHeight / baseHeight);
+      let clipPath = 'inset(0% 0% 0% 0%)';
+
+      if (
+        fit === 'cover' ||
+        fit === 'contain' ||
+        fit === 'none' ||
+        fit === 'scale-down'
+      ) {
+        const containScale = Math.min(
+          targetWidth / baseWidth,
+          targetHeight / baseHeight,
+        );
+        let uniformScale;
+
+        if (fit === 'cover') {
+          uniformScale = Math.max(
+            targetWidth / baseWidth,
+            targetHeight / baseHeight,
+          );
+        } else if (fit === 'none') {
+          uniformScale = 1;
+        } else if (fit === 'scale-down') {
+          uniformScale = Math.min(1, containScale);
+        } else {
+          uniformScale = containScale;
+        }
+
+        uniformScale = this.#resolvePositiveScale(uniformScale);
+        scaleX = uniformScale;
+        scaleY = uniformScale;
+
+        if (fit === 'cover') {
+          const scaledWidth = baseWidth * uniformScale;
+          const scaledHeight = baseHeight * uniformScale;
+          const overflowX = Math.max(0, scaledWidth - targetWidth);
+          const overflowY = Math.max(0, scaledHeight - targetHeight);
+          const bias =
+            this.#resolveCloseFlybackObjectPositionBias(objectPosition);
+
+          const cropLeft = overflowX * bias.x;
+          const cropRight = overflowX - cropLeft;
+          const cropTop = overflowY * bias.y;
+          const cropBottom = overflowY - cropTop;
+
+          const insetLeft = (cropLeft / uniformScale / baseWidth) * PERCENTAGE;
+          const insetRight =
+            (cropRight / uniformScale / baseWidth) * PERCENTAGE;
+          const insetTop = (cropTop / uniformScale / baseHeight) * PERCENTAGE;
+          const insetBottom =
+            (cropBottom / uniformScale / baseHeight) * PERCENTAGE;
+
+          clipPath = `inset(${this.#toPercentString(insetTop)} ${this.#toPercentString(insetRight)} ${this.#toPercentString(insetBottom)} ${this.#toPercentString(insetLeft)})`;
+        }
+      }
+
+      return {
+        scaleX: this.#resolvePositiveScale(scaleX),
+        scaleY: this.#resolvePositiveScale(scaleY),
+        clipPath,
+      };
+    }
+
+    #resolveSharedOpenMetrics(snapshot, img) {
       const canvasRect = this.nodes.canvas.getBoundingClientRect();
       const startX =
         snapshot.rect.left +
@@ -2273,35 +2508,74 @@
         canvasRect.height * CENTER_OFFSET;
       const finalWidth = img.naturalWidth || img.clientWidth;
       const finalHeight = img.naturalHeight || img.clientHeight;
-      const transCss = `${SHARED_ELEMENT_TRANSITION_DURATION}ms ${SHARED_ELEMENT_TRANSITION_EASING}`;
 
+      if (!finalWidth || !finalHeight) {
+        return null;
+      }
+
+      const fitStart = this.#resolveCloseFlybackFitTransform({
+        targetWidth: snapshot.rect.width,
+        targetHeight: snapshot.rect.height,
+        baseWidth: finalWidth,
+        baseHeight: finalHeight,
+        objectFit: snapshot.objectFit,
+        objectPosition: snapshot.objectPosition,
+      });
+      const startBorderRadius = this.#scaleBorderRadiusForTransform(
+        snapshot.borderRadius,
+        fitStart.scaleX,
+        fitStart.scaleY,
+      );
+      const startClipPath = this.#applyRoundToInsetClipPath(
+        fitStart.clipPath,
+        startBorderRadius,
+      );
+
+      return {
+        startTranslateX: Math.round(startX),
+        startTranslateY: Math.round(startY),
+        finalWidth,
+        finalHeight,
+        startScaleX: fitStart.scaleX,
+        startScaleY: fitStart.scaleY,
+        startClipPath,
+        startBorderRadius,
+        transCss: `${SHARED_ELEMENT_TRANSITION_DURATION}ms ${SHARED_ELEMENT_TRANSITION_EASING}`,
+      };
+    }
+
+    #applySharedOpenInitialState(snapshot, img, metrics) {
       this.nodes.transform.style.transition = 'none';
-      this.nodes.transform.style.transform = `translate(${startX}px, ${startY}px) scale(1)`;
+      this.nodes.transform.style.transform = `translate3d(${metrics.startTranslateX}px, ${metrics.startTranslateY}px, 0) scale(1)`;
 
       img.style.transition = 'none';
-      img.style.width = `${snapshot.rect.width}px`;
-      img.style.height = `${snapshot.rect.height}px`;
+      img.style.width = `${metrics.finalWidth}px`;
+      img.style.height = `${metrics.finalHeight}px`;
       img.style.objectFit = snapshot.objectFit;
       img.style.objectPosition = snapshot.objectPosition;
-      img.style.borderRadius = snapshot.borderRadius;
+      img.style.borderRadius = metrics.startBorderRadius;
       img.style.filter = snapshot.filter;
       img.style.opacity = '1';
+      img.style.transformOrigin = 'center center';
+      img.style.transform = `translate3d(0px, 0px, 0) scale(${metrics.startScaleX}, ${metrics.startScaleY})`;
+      img.style.clipPath = metrics.startClipPath;
 
       if (snapshot.element && snapshot.element.style) {
         snapshot.element.style.visibility = 'hidden';
       }
+    }
 
-      void this.nodes.transform.offsetWidth;
-      void this.nodes.canvas.offsetWidth;
-      void img.offsetWidth;
-
-      const cleanup = (event) => {
+    #createSharedOpenCleanup(img) {
+      return (event) => {
         if (event && event.target !== this.nodes.transform) {
           return;
         }
 
         if (this.nodes && this.nodes.transform) {
-          this.nodes.transform.removeEventListener('transitionend', cleanup);
+          this.nodes.transform.removeEventListener(
+            'transitionend',
+            this.#transitionCleanupFn,
+          );
         }
         this.#transitionCleanupFn = null;
         this.#openTransitionInProgress = false;
@@ -2310,12 +2584,15 @@
 
         if (this.nodes.transform) {
           this.nodes.transform.style.transition = '';
-          this.nodes.transform.style.transform = `translate(${this.renderState.translateX}px, ${this.renderState.translateY}px) scale(${this.state.baseScale})`;
+          this.nodes.transform.style.transform = `translate3d(${this.renderState.translateX}px, ${this.renderState.translateY}px, 0) scale(${this.state.baseScale})`;
         }
         if (img) {
           img.style.transition = '';
           img.style.width = '';
           img.style.height = '';
+          img.style.transform = '';
+          img.style.clipPath = '';
+          img.style.transformOrigin = '';
           img.style.objectFit = '';
           img.style.objectPosition = '';
           img.style.filter = '';
@@ -2327,29 +2604,23 @@
 
         this.#openThumbnailSnapshot = null;
       };
+    }
 
-      if (this.#transitionCleanupFn && this.nodes.transform) {
-        this.nodes.transform.removeEventListener(
-          'transitionend',
-          this.#transitionCleanupFn,
-        );
-      }
-      this.#transitionCleanupFn = cleanup;
-
+    #runSharedOpenTransition(img, metrics, cleanup) {
       requestAnimationFrame(() => {
         requestAnimationFrame(() => {
           if (!this.nodes || !this.nodes.transform) {
             return;
           }
 
-          this.nodes.transform.style.transition = `transform ${transCss}`;
-          this.nodes.transform.style.transform = `translate(0px, 0px) scale(${this.state.baseScale})`;
+          this.nodes.transform.style.transition = `transform ${metrics.transCss}`;
+          this.nodes.transform.style.transform = `translate3d(0px, 0px, 0) scale(${this.state.baseScale})`;
 
           if (img) {
-            img.style.transition = `all ${transCss}`;
-            img.style.width = `${finalWidth}px`;
-            img.style.height = `${finalHeight}px`;
+            img.style.transition = `transform ${metrics.transCss}, border-radius ${metrics.transCss}, clip-path ${metrics.transCss}, opacity ${metrics.transCss}`;
+            img.style.transform = 'translate3d(0px, 0px, 0) scale(1, 1)';
             img.style.borderRadius = '0px';
+            img.style.clipPath = 'inset(0% 0% 0% 0% round 0px)';
             img.style.objectFit = 'contain';
             img.style.filter = '';
           }
@@ -2357,6 +2628,35 @@
           this.nodes.transform.addEventListener('transitionend', cleanup);
         });
       });
+    }
+
+    #startSharedElementOpen(snapshot, img) {
+      if (
+        !snapshot ||
+        !img ||
+        !this.nodes ||
+        !this.nodes.transform ||
+        !this.nodes.canvas
+      ) {
+        return false;
+      }
+
+      const metrics = this.#resolveSharedOpenMetrics(snapshot, img);
+      if (!metrics) {
+        return false;
+      }
+      this.#applySharedOpenInitialState(snapshot, img, metrics);
+
+      if (this.#transitionCleanupFn && this.nodes.transform) {
+        this.nodes.transform.removeEventListener(
+          'transitionend',
+          this.#transitionCleanupFn,
+        );
+      }
+      const cleanup = this.#createSharedOpenCleanup(img);
+      this.#transitionCleanupFn = cleanup;
+
+      this.#runSharedOpenTransition(img, metrics, cleanup);
 
       return true;
     }
@@ -2372,17 +2672,17 @@
 
       if (dir) {
         this.nodes.transform.style.transition = 'none';
-        this.nodes.transform.style.transform = `translate(${dir * SLIDE_OFFSET}px, 0px) scale(${SLIDE_SCALE_INITIAL})`;
+        this.nodes.transform.style.transform = `translate3d(${dir * SLIDE_OFFSET}px, 0px, 0) scale(${SLIDE_SCALE_INITIAL})`;
         img.style.opacity = '0';
       } else {
         this.nodes.transform.style.transition = 'none';
-        this.nodes.transform.style.transform = `translate(0px, 0px) scale(${this.state.baseScale})`;
+        this.nodes.transform.style.transform = `translate3d(0px, 0px, 0) scale(${this.state.baseScale})`;
         img.style.opacity = '1';
       }
 
       requestAnimationFrame(() => {
         this.nodes.transform.style.transition = `transform ${SLIDE_IN_DURATION}ms cubic-bezier(0.3, 1, 0.3, 1)`;
-        this.nodes.transform.style.transform = `translate(0px, 0px) scale(${this.state.baseScale})`;
+        this.nodes.transform.style.transform = `translate3d(0px, 0px, 0) scale(${this.state.baseScale})`;
         img.style.transition = `opacity ${SLIDE_IN_OPACITY_DURATION}ms ease`;
         img.style.opacity = '1';
 
@@ -2400,7 +2700,7 @@
           this.#startRenderLoop();
 
           this.nodes.transform.style.transition = '';
-          this.nodes.transform.style.transform = `translate(${this.renderState.translateX}px, ${this.renderState.translateY}px) scale(${this.renderState.scale})`;
+          this.nodes.transform.style.transform = `translate3d(${this.renderState.translateX}px, ${this.renderState.translateY}px, 0) scale(${this.renderState.scale})`;
           img.style.transition = '';
         };
 
@@ -2459,19 +2759,13 @@
     }
 
     #getCloseFlybackTargetMetrics(state) {
-      const liveRect = state.element.getBoundingClientRect();
-      const useLiveRect = liveRect && liveRect.width > 0 && liveRect.height > 0;
-      const rect = useLiveRect
-        ? liveRect
-        : state.snapshot && state.snapshot.rect;
+      const rect = state.snapshot && state.snapshot.rect;
 
       if (!rect || rect.width <= 0 || rect.height <= 0) {
         return null;
       }
 
-      const style = useLiveRect
-        ? window.getComputedStyle(state.element)
-        : state.snapshot;
+      const style = state.snapshot;
 
       return {
         rect,
@@ -2480,9 +2774,37 @@
     }
 
     #applyCloseFlybackTarget(targetRect, canvasRect, style, immediate = false) {
+      const targetFilter = style.filter !== 'none' ? style.filter : '';
+      const target = this.#resolveCloseFlybackTransformTarget({
+        targetRect,
+        canvasRect,
+        style,
+      });
+
+      if (immediate) {
+        this.nodes.transform.style.transition = 'none';
+        this.nodes.imgNode.style.transition = 'none';
+      }
+
+      this.nodes.transform.style.transform = `translate3d(${target.x}px, ${target.y}px, 0) scale(1)`;
+      this.nodes.imgNode.style.transformOrigin = 'center center';
+      this.nodes.imgNode.style.transform = `translate3d(0px, 0px, 0) scale(${target.scaleX}, ${target.scaleY})`;
+      this.nodes.imgNode.style.clipPath = target.clipPath;
+      this.nodes.imgNode.style.borderRadius = target.borderRadius;
+      this.nodes.imgNode.style.objectFit = style.objectFit || 'cover';
+      this.nodes.imgNode.style.objectPosition =
+        style.objectPosition || 'center';
+      this.nodes.imgNode.style.filter = targetFilter;
+
+      if (this.nodes.bg) {
+        this.nodes.bg.style.opacity = '0';
+      }
+    }
+
+    #resolveCloseFlybackTransformTarget(params) {
+      const { targetRect, canvasRect, style } = params;
       const targetWidth = targetRect.width;
       const targetHeight = targetRect.height;
-      const targetFilter = style.filter !== 'none' ? style.filter : '';
       const destX =
         targetRect.left +
         targetWidth * CENTER_OFFSET -
@@ -2494,23 +2816,40 @@
         canvasRect.top -
         canvasRect.height * CENTER_OFFSET;
 
-      if (immediate) {
-        this.nodes.transform.style.transition = 'none';
-        this.nodes.imgNode.style.transition = 'none';
-      }
+      const state = this.#closeFlybackState;
+      const baseWidth =
+        state && Number.isFinite(state.baseWidth) && state.baseWidth > 0
+          ? state.baseWidth
+          : targetWidth;
+      const baseHeight =
+        state && Number.isFinite(state.baseHeight) && state.baseHeight > 0
+          ? state.baseHeight
+          : targetHeight;
+      const fitTarget = this.#resolveCloseFlybackFitTransform({
+        targetWidth,
+        targetHeight,
+        baseWidth,
+        baseHeight,
+        objectFit: style && style.objectFit,
+        objectPosition: style && style.objectPosition,
+      });
+      const borderRadius = this.#scaleBorderRadiusForTransform(
+        style && style.borderRadius,
+        fitTarget.scaleX,
+        fitTarget.scaleY,
+      );
 
-      this.nodes.transform.style.transform = `translate(${destX}px, ${destY}px) scale(1)`;
-      this.nodes.imgNode.style.borderRadius = style.borderRadius;
-      this.nodes.imgNode.style.width = `${targetWidth}px`;
-      this.nodes.imgNode.style.height = `${targetHeight}px`;
-      this.nodes.imgNode.style.objectFit = style.objectFit || 'cover';
-      this.nodes.imgNode.style.objectPosition =
-        style.objectPosition || 'center';
-      this.nodes.imgNode.style.filter = targetFilter;
-
-      if (this.nodes.bg) {
-        this.nodes.bg.style.opacity = '0';
-      }
+      return {
+        x: Math.round(destX),
+        y: Math.round(destY),
+        scaleX: fitTarget.scaleX,
+        scaleY: fitTarget.scaleY,
+        clipPath: this.#applyRoundToInsetClipPath(
+          fitTarget.clipPath,
+          borderRadius,
+        ),
+        borderRadius,
+      };
     }
 
     #syncCloseFlybackTarget() {
@@ -2590,6 +2929,9 @@
         this.nodes.imgNode.naturalWidth || this.nodes.imgNode.clientWidth;
       const currentImgHeight =
         this.nodes.imgNode.naturalHeight || this.nodes.imgNode.clientHeight;
+      if (!currentImgWidth || !currentImgHeight) {
+        return false;
+      }
       const transCss = `${SHARED_ELEMENT_TRANSITION_DURATION}ms ${SHARED_ELEMENT_TRANSITION_EASING}`;
 
       this.nodes.transform.style.transition = 'none';
@@ -2597,20 +2939,19 @@
       this.nodes.imgNode.style.width = `${currentImgWidth}px`;
       this.nodes.imgNode.style.height = `${currentImgHeight}px`;
       this.nodes.imgNode.style.objectFit = 'contain';
-
-      void this.nodes.transform.offsetWidth;
-      void this.nodes.imgNode.offsetWidth;
-
-      const scheduleSync = () => this.#scheduleCloseFlybackSync();
+      this.nodes.imgNode.style.transformOrigin = 'center center';
+      this.nodes.imgNode.style.transform =
+        'translate3d(0px, 0px, 0) scale(1, 1)';
+      this.nodes.imgNode.style.clipPath = 'inset(0% 0% 0% 0%)';
 
       this.#closeFlybackState = {
         element: target,
         snapshot,
+        baseWidth: currentImgWidth,
+        baseHeight: currentImgHeight,
         overlay,
         lastFocused,
         hasSynced: false,
-        scrollListener: scheduleSync,
-        resizeListener: scheduleSync,
       };
 
       requestAnimationFrame(() => {
@@ -2623,14 +2964,11 @@
             this.nodes.transform.style.transition = `transform ${transCss}`;
           }
           if (this.nodes.imgNode) {
-            this.nodes.imgNode.style.transition = `all ${transCss}`;
+            this.nodes.imgNode.style.transition = `transform ${transCss}, border-radius ${transCss}, clip-path ${transCss}, opacity ${transCss}`;
           }
           if (this.nodes.bg) {
             this.nodes.bg.style.transition = `opacity ${transCss}`;
           }
-
-          window.addEventListener('scroll', scheduleSync, { passive: true });
-          window.addEventListener('resize', scheduleSync, { passive: true });
 
           this.#syncCloseFlybackTarget();
         });
@@ -2680,8 +3018,9 @@
 
     #resetCloseInteractionFlags(wasClosedViaSwipe) {
       if (wasClosedViaSwipe) {
+        this.#deferOverflowUnlockOnClose = false;
         this.#blockInertialScrolling();
-      } else {
+      } else if (!this.#deferOverflowUnlockOnClose) {
         document.documentElement.style.overflow = '';
       }
 
@@ -3041,6 +3380,8 @@
 
       const wasClosedViaSwipe =
         this.#isVerticalSwipe || this.#trackpadSwipeToClose;
+      this.#deferOverflowUnlockOnClose =
+        Boolean(performFlyToTarget) && !wasClosedViaSwipe;
 
       this.#resetCloseState(wasClosedViaSwipe);
 
@@ -3049,6 +3390,10 @@
         this.#startCloseFlyback(item, overlay, lastFocused);
 
       if (!flybackStarted) {
+        this.#deferOverflowUnlockOnClose = false;
+        if (!wasClosedViaSwipe) {
+          document.documentElement.style.overflow = '';
+        }
         this.overlay.classList.remove(CLASS_OPEN);
         this.overlay.setAttribute('aria-hidden', 'true');
 
@@ -3061,6 +3406,10 @@
 
     #finishClose(overlay, lastFocused) {
       this.#stopCloseFlybackTracking();
+      if (this.#deferOverflowUnlockOnClose) {
+        document.documentElement.style.overflow = '';
+        this.#deferOverflowUnlockOnClose = false;
+      }
 
       if (!this.state.open && overlay) {
         overlay.style.display = 'none';
@@ -3081,6 +3430,9 @@
             this.nodes.imgNode.style.borderRadius = '';
             this.nodes.imgNode.style.width = '';
             this.nodes.imgNode.style.height = '';
+            this.nodes.imgNode.style.transform = '';
+            this.nodes.imgNode.style.clipPath = '';
+            this.nodes.imgNode.style.transformOrigin = '';
             this.nodes.imgNode.style.objectFit = '';
             this.nodes.imgNode.style.objectPosition = '';
             this.nodes.imgNode.style.filter = '';
@@ -3441,11 +3793,14 @@
       }
     }
 
-    #applySwipeAnimationTransform(bgProgress) {
-      const maxScaleReduction = 0.3;
-      const scaleOffset = 1 - bgProgress * maxScaleReduction;
+    #applySwipeAnimationTransform(morphProgress) {
+      // Keep the pre-threshold feel unchanged, but continue shrinking smoothly
+      // until the close trigger distance to avoid a "scale freeze" mid-swipe.
+      const maxScaleReduction =
+        SWIPE_SCALE_REDUCTION_BASE * SWIPE_CLOSE_TRIGGER_MULTIPLIER;
+      const scaleOffset = Math.max(0, 1 - morphProgress * maxScaleReduction);
       if (this.nodes.transform) {
-        this.nodes.transform.style.transform = `translate(${this.renderState.translateX}px, ${this.renderState.translateY}px) scale(${this.renderState.scale * scaleOffset})`;
+        this.nodes.transform.style.transform = `translate3d(${this.renderState.translateX}px, ${this.renderState.translateY}px, 0) scale(${this.renderState.scale * scaleOffset})`;
       }
     }
 
@@ -3481,9 +3836,13 @@
       // Only UI disappears fast when dragged away from center
       const absY = Math.abs(translateY);
       const bgProgress = Math.min(1, absY / SWIPE_DOWN_THRESHOLD);
+      const morphProgress = Math.min(
+        1,
+        absY / (SWIPE_DOWN_THRESHOLD * SWIPE_CLOSE_TRIGGER_MULTIPLIER),
+      );
 
       this.#applySwipeAnimationOpacity(absY, bgProgress);
-      this.#applySwipeAnimationTransform(bgProgress);
+      this.#applySwipeAnimationTransform(morphProgress);
       this.#applySwipeAnimationRadius(bgProgress);
     }
 
@@ -4010,8 +4369,9 @@
       #spot-overlay.spot-open #spot-bg { opacity:1; }
       #spot-stage { position:fixed; inset:0; display:flex; align-items:center; justify-content:center; pointer-events:none; z-index:2147483645; }
       #spot-canvas { position:absolute; inset:0; overflow:hidden; pointer-events:auto; display:flex; align-items:center; justify-content:center; }
-      #spot-transform { will-change:transform; touch-action:none; transform-origin:center center; cursor:grab; transition: transform var(--spot-anim); }
+      #spot-transform { will-change:transform; touch-action:none; transform-origin:center center; cursor:grab; transition: transform var(--spot-anim); -webkit-backface-visibility:hidden; backface-visibility:hidden; -webkit-perspective:1000px; perspective:1000px; -webkit-transform-style:preserve-3d; transform-style:preserve-3d; }
       #spot-transform img { display:block; width:auto; height:auto; max-width:none; max-height:none; object-fit:contain; user-select:none; -webkit-user-drag:none; pointer-events:auto; transition:opacity 180ms ease; }
+      #spot-img { image-rendering:auto; }
       #spot-transform img.spot-svg { width:100%; height:auto; max-width:100vw; max-height:100vh; }
       .spot-nav { position:absolute; top:50%; transform:translateY(-50%); width:50px; height:50px; border-radius:50%; background:rgba(0,0,0,0.35); color:var(--spot-ui-fg); border:1px solid rgba(255,255,255,0.12); backdrop-filter:blur(0px); box-shadow:var(--spot-shadow); display:flex; align-items:center; justify-content:center; font-size:0; cursor:pointer; pointer-events:auto; opacity:1; transition:background var(--spot-anim), transform var(--spot-anim), opacity var(--spot-anim), backdrop-filter var(--spot-anim); z-index:2147483650; }
       #spot-overlay.spot-open .spot-nav { backdrop-filter:blur(6px); }
